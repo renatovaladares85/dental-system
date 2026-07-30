@@ -1,0 +1,93 @@
+# Frontend
+
+node_modules/
+dist/
+coverage/
+.vite/
+*.tsbuildinfo
+
+# Pacotes, cache e arquivos temporários
+
+.cache/
+.npm/
+.pnpm-store/
+tmp/
+temp/
+*.tmp
+*.temp
+*.partial
+
+# Artefatos de build e instalação
+
+artifacts/
+*.msi
+*.wixpdb
+
+# Servidor Rust / Tauri
+
+target/
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# Variáveis de ambiente e configuração local
+
+.env
+.env.*
+!.env.example
+!.env.*.example
+.envrc
+.direnv/
+
+# Logs
+
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# IDE e sistema operacional
+
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Dados locais
+
+.local-data/
+
+# Bancos de dados locais
+
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.sqlcipher
+
+# Backups e recuperação
+
+backups/
+backup/
+recovery/
+*.bak
+*.backup
+*.dump
+*.odsbackup
+*.odskey
+
+# Chaves, certificados e credenciais
+
+*.key
+*.pem
+*.pfx
+*.p12
+*.jks
+*.keystore
+
+# Validações locais
+installer/validation-NOT-FOR-DISTRIBUTION.txt

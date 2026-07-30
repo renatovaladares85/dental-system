@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-labelledby="title">
+  <title id="title">Offline Dental System</title>
+  <rect width="24" height="24" rx="5" fill="#195e78" />
+  <g fill="none" stroke="#ffffff" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8">
+    <path d="M19 12.3c0 4.3-3 6.4-6.6 7.7a1 1 0 0 1-.8 0C8 18.7 5 16.6 5 12.3V6.8c2.4-.2 4.8-1.2 7-3 2.2 1.8 4.6 2.8 7 3z" />
+    <path d="m8.7 11.8 2.1 2.1 4.7-4.7" />
+  </g>
+</svg>

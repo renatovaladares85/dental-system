@@ -1,0 +1,212 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:fw="http://wixtoolset.org/schemas/v4/wxs/firewall"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package Name="Offline Dental System"
+           Manufacturer="Renato Valadares"
+           Language="1046"
+           Version="$(var.ProductVersion)"
+           UpgradeCode="C31A25B0-5DEF-4497-8288-CA531C34D957"
+           Scope="perMachine"
+           InstallerVersion="500"
+           Compressed="yes">
+    <SummaryInformation Description="Servidor web local do Offline Dental System"
+                        Manufacturer="Renato Valadares" />
+    <MajorUpgrade DowngradeErrorMessage="Uma versão mais recente do Offline Dental System já está instalada."
+                  Schedule="afterInstallInitialize" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Feature Id="ProductFeature" Title="Offline Dental System" Level="1">
+      <ComponentGroupRef Id="ApplicationComponents" />
+      <ComponentGroupRef Id="DataDirectoryComponents" />
+      <ComponentGroupRef Id="ShortcutComponents" />
+    </Feature>
+
+    <!-- The command is captured into CustomActionData immediately before the
+         deferred, non-impersonated action. HideTarget keeps paths and command
+         details out of verbose MSI logs. Only the generated public CA is read. -->
+    <SetProperty Id="ConfigureDentalService"
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]configure-service.ps1&quot;"
+                 Before="ConfigureDentalService"
+                 Sequence="execute" />
+    <CustomAction Id="ConfigureDentalService"
+                  BinaryRef="Wix4UtilCA_X64"
+                  DllEntry="WixSilentExec"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check"
+                  HideTarget="yes" />
+    <SetProperty Id="ConfigureHostTrust"
+                 Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]configure-host-trust.ps1&quot; -ProductRoot &quot;[PRODUCTDATAROOT]&quot;"
+                 Before="ConfigureHostTrust"
+                 Sequence="execute" />
+    <CustomAction Id="ConfigureHostTrust"
+                  BinaryRef="Wix4UtilCA_X64"
+                  DllEntry="WixSilentExec"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check"
+                  HideTarget="yes" />
+    <CustomAction Id="LaunchAfterInstall"
+                  Directory="SystemFolder"
+                  ExeCommand="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]launch-after-install.ps1&quot;"
+                  Execute="immediate"
+                  Impersonate="yes"
+                  Return="asyncNoWait" />
+    <InstallExecuteSequence>
+      <Custom Action="ConfigureDentalService"
+              After="InstallServices"
+              Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="ConfigureHostTrust"
+              After="StartServices"
+              Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="LaunchAfterInstall"
+              After="InstallFinalize"
+              Condition="NOT Installed AND UILevel &gt;= 4" />
+    </InstallExecuteSequence>
+  </Package>
+
+  <Fragment>
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="Offline Dental System" />
+    </StandardDirectory>
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="PRODUCTDATAROOT" Name="OfflineDentalSystem">
+        <Directory Id="DATADIRECTORY" Name="Data" />
+        <Directory Id="ARTIFACTSDIRECTORY" Name="Artifacts" />
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="PROGRAMMENUDIR" Name="Offline Dental System" />
+    </StandardDirectory>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="ApplicationComponents" Directory="INSTALLFOLDER">
+      <Component Id="ServerComponent" Guid="EC790661-BB2B-4A17-A32E-BA27925DDE62" Bitness="always64">
+        <File Id="ServerExecutable"
+              Source="$(var.ServerExecutable)"
+              Name="offline-dental-system.exe"
+              KeyPath="yes"
+              Checksum="yes">
+          <fw:FirewallException Id="LanHttpsPrivate"
+                                Name="Offline Dental System HTTPS (Private)"
+                                Description="Acesso local HTTPS ao Offline Dental System"
+                                Port="8743"
+                                Protocol="tcp"
+                                Profile="private"
+                                Scope="localSubnet" />
+          <fw:FirewallException Id="LanHttpsDomain"
+                                Name="Offline Dental System HTTPS (Domain)"
+                                Description="Acesso local HTTPS ao Offline Dental System"
+                                Port="8743"
+                                Protocol="tcp"
+                                Profile="domain"
+                                Scope="localSubnet" />
+          <fw:FirewallException Id="MdnsPrivate"
+                                Name="Offline Dental System mDNS (Private)"
+                                Description="Descoberta local do Offline Dental System"
+                                Port="5353"
+                                Protocol="udp"
+                                Profile="private"
+                                Scope="localSubnet" />
+          <fw:FirewallException Id="MdnsDomain"
+                                Name="Offline Dental System mDNS (Domain)"
+                                Description="Descoberta local do Offline Dental System"
+                                Port="5353"
+                                Protocol="udp"
+                                Profile="domain"
+                                Scope="localSubnet" />
+        </File>
+        <ServiceInstall Id="DentalServiceInstall"
+                        Name="OfflineDentalSystem"
+                        DisplayName="Offline Dental System"
+                        Description="Servidor web local e cifrado para a clínica."
+                        Type="ownProcess"
+                        Start="auto"
+                        ErrorControl="normal"
+                        Account="NT AUTHORITY\LocalService"
+                        Arguments="--service"
+                        Vital="yes">
+          <util:ServiceConfig FirstFailureActionType="restart"
+                              SecondFailureActionType="restart"
+                              ThirdFailureActionType="restart"
+                              ResetPeriodInDays="1"
+                              RestartServiceDelayInSeconds="15" />
+        </ServiceInstall>
+        <ServiceControl Id="DentalServiceControl"
+                        Name="OfflineDentalSystem"
+                        Start="install"
+                        Stop="both"
+                        Remove="uninstall"
+                        Wait="yes" />
+      </Component>
+
+      <Component Id="OperationalScripts" Guid="70512C06-3026-4E0F-85F3-6B2DA2659075" Bitness="always64">
+        <File Id="ConfigureHostTrustScript"
+              Source="$(var.ConfigureHostTrustScript)"
+              Name="configure-host-trust.ps1"
+              KeyPath="yes" />
+        <File Id="ConfigureServiceScript"
+              Source="$(var.ConfigureServiceScript)"
+              Name="configure-service.ps1" />
+        <File Id="LaunchAfterInstallScript"
+              Source="$(var.LaunchAfterInstallScript)"
+              Name="launch-after-install.ps1" />
+      </Component>
+
+      <Component Id="ProductLicense" Guid="774F598A-240C-44BD-B5C8-278BC4BABCE5" Bitness="always64">
+        <File Id="ProductLicenseFile"
+              Source="$(var.ProductLicenseFile)"
+              Name="LICENSE.txt"
+              KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="DataDirectoryComponents" Directory="PRODUCTDATAROOT">
+      <!-- MSI 5 applies an explicit protected DACL. OI/CI propagate the three
+           full-control ACEs to files and directories; no Users or
+           Authenticated Users ACE is present. The service SID was verified by
+           `sc.exe showsid OfflineDentalSystem`. -->
+      <Component Id="PersistentDataRoot" Guid="F7F44DFC-C4E5-4261-9E01-3653E0E7CE51"
+                 Bitness="always64" Permanent="yes" NeverOverwrite="yes">
+        <CreateFolder>
+          <PermissionEx Id="PersistentDataRootAcl"
+                        Sddl="D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;S-1-5-80-3281840523-3983707945-848950836-1812796060-3499222651)" />
+        </CreateFolder>
+        <RegistryValue Root="HKLM"
+                       Key="Software\RenatoValadares\OfflineDentalSystem"
+                       Name="PersistentDataRoot"
+                       Type="string"
+                       Value="[PRODUCTDATAROOT]"
+                       KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+  <Fragment>
+    <!-- The component is rooted in Program Files (machine scope) while the
+         shortcut explicitly targets ProgramMenuFolder. This avoids a
+         per-user component/key-path mismatch (ICE38). -->
+    <ComponentGroup Id="ShortcutComponents" Directory="INSTALLFOLDER">
+      <Component Id="BrowserShortcut" Guid="C6EB7C2B-7D9C-48D1-A8A9-77B331FB2403" Bitness="always64">
+        <util:InternetShortcut Id="OpenDentalSystemShortcut"
+                               Type="link"
+                               Name="Offline Dental System"
+                               Directory="PROGRAMMENUDIR"
+                               Target="http://127.0.0.1:8742" />
+        <RemoveFolder Id="RemoveProgramMenuDirectory"
+                      Directory="PROGRAMMENUDIR"
+                      On="uninstall" />
+        <RegistryValue Root="HKLM"
+                       Key="Software\RenatoValadares\OfflineDentalSystem"
+                       Name="BrowserShortcut"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

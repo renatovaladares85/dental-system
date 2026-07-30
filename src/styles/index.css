@@ -1,0 +1,82 @@
+@import 'tailwindcss';
+
+@font-face {
+  font-family: 'Inter Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('@fontsource-variable/inter/files/inter-latin-wght-normal.woff2')
+    format('woff2-variations');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 800;
+  src: url('@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2')
+    format('woff2-variations');
+}
+
+@theme {
+  --font-sans: 'Inter Variable', 'Segoe UI Variable', 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono Variable', 'Cascadia Mono', Consolas, monospace;
+
+  --color-petrol-50: #f0f8fb;
+  --color-petrol-100: #d0ecf5;
+  --color-petrol-200: #a0d8ea;
+  --color-petrol-300: #62bdd9;
+  --color-petrol-400: #2ea2c6;
+  --color-petrol-500: #1d8bae;
+  --color-petrol-600: #1a7393;
+  --color-petrol-700: #195e78;
+  --color-petrol-800: #1a4d62;
+  --color-petrol-900: #1b4153;
+  --color-petrol-950: #0d2535;
+}
+
+@layer base {
+  :root {
+    font-family: var(--font-sans);
+    color: #0f172a;
+    background: #f8fafc;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    min-width: 320px;
+    background: #f8fafc;
+  }
+
+  body {
+    min-width: 320px;
+    min-height: 100vh;
+    margin: 0;
+  }
+
+  button,
+  input {
+    font: inherit;
+  }
+
+  ::selection {
+    color: #0d2535;
+    background: #a0d8ea;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

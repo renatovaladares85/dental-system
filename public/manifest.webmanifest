@@ -1,0 +1,19 @@
+{
+  "name": "Offline Dental System",
+  "short_name": "Dental System",
+  "description": "Gestão odontológica no servidor local da clínica.",
+  "lang": "pt-BR",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#0d2535",
+  "icons": [
+    {
+      "src": "/icons/app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

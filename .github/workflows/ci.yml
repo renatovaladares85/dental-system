@@ -1,0 +1,148 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend
+    runs-on: windows-2022
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Instalar dependências do lockfile
+        run: npm ci
+
+      - name: Verificar formatação
+        run: npm run format:check
+
+      - name: Executar lint
+        run: npm run lint
+
+      - name: Executar typecheck
+        run: npm run typecheck
+
+      - name: Executar testes
+        run: npm test
+
+      - name: Compilar frontend
+        run: npm run build
+
+      - name: Verificar isolamento do cache PWA
+        run: npm run verify:pwa
+
+      - name: Auditar dependências npm
+        run: npm audit --audit-level=high
+
+      - name: Inventariar licenças npm
+        shell: pwsh
+        run: |
+          $sbomPath = Join-Path $env:RUNNER_TEMP 'offline-dental-npm-sbom.json'
+          cmd.exe /d /c "npm sbom --sbom-format cyclonedx --include=dev > `"$sbomPath`""
+          if ($LASTEXITCODE -ne 0) { throw 'Falha ao gerar o inventário npm.' }
+          $components = @((Get-Content -Raw $sbomPath | ConvertFrom-Json).components)
+          $missing = @($components | Where-Object { -not $_.licenses -or $_.licenses.Count -eq 0 })
+          if ($missing.Count -gt 0) {
+            $names = $missing | ForEach-Object { "$($_.name)@$($_.version)" }
+            throw "Dependências npm sem licença declarada: $($names -join ', ')"
+          }
+          $components | Sort-Object name | Select-Object name, version, licenses
+
+  rust:
+    name: Servidor Rust/Windows
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Instalar toolchain fixada
+        shell: pwsh
+        run: |
+          $match = Select-String -Path rust-toolchain.toml -Pattern '^channel = "([^"]+)"$'
+          if (-not $match) { throw 'Canal ausente em rust-toolchain.toml.' }
+          $channel = $match.Matches[0].Groups[1].Value
+          rustup toolchain install $channel --profile minimal --component clippy --component rustfmt --target x86_64-pc-windows-msvc
+          rustup show active-toolchain
+
+      - name: Configurar Node.js para assets incorporados
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Compilar SPA para incorporação no binário
+        run: |
+          npm ci
+          npm run build
+
+      - name: Verificar lockfile Cargo
+        shell: pwsh
+        run: |
+          if (-not (Test-Path src-tauri/Cargo.lock)) {
+            throw 'src-tauri/Cargo.lock deve ser versionado para builds determinísticos.'
+          }
+
+      - name: Verificar formatação Rust
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+
+      - name: Executar Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets --all-features -- -D warnings
+
+      - name: Executar testes Rust
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked --all-features
+
+      - name: Compilar servidor Rust com a SPA incorporada
+        run: cargo build --manifest-path src-tauri/Cargo.toml --locked --all-features
+
+      - name: Instalar ferramentas de auditoria fixadas
+        run: |
+          cargo install cargo-audit --locked --version 0.22.2
+          cargo install cargo-license --locked --version 0.7.0
+
+      - name: Auditar vulnerabilidades Rust
+        run: cargo audit --file src-tauri/Cargo.lock --target-os windows --target-arch x86_64 --deny yanked
+
+      - name: Verificar metadados de licença das dependências
+        shell: pwsh
+        run: |
+          $licenses = cargo license --manifest-path src-tauri/Cargo.toml --all-features --json | ConvertFrom-Json
+          $metadata = cargo metadata --manifest-path src-tauri/Cargo.toml --locked --no-deps --format-version 1 | ConvertFrom-Json
+          $workspaceNames = @($metadata.packages | ForEach-Object { $_.name })
+          $missing = @($licenses | Where-Object {
+            $workspaceNames -notcontains $_.name -and
+            [string]::IsNullOrWhiteSpace($_.license) -and
+            [string]::IsNullOrWhiteSpace($_.license_file)
+          })
+          if ($missing.Count -gt 0) {
+            $names = $missing | ForEach-Object { "$($_.name)@$($_.version)" }
+            throw "Dependências sem metadado de licença: $($names -join ', ')"
+          }
+          $licenses | Sort-Object name | Format-Table name, version, license, license_file
+
+# Este workflow valida código-fonte e o binário de desenvolvimento. Ele não cria MSI,
+# não assina, não publica e não cria release.

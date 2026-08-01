@@ -1,11 +1,12 @@
 use std::{ffi::OsString, path::PathBuf, sync::Arc};
 
-const USAGE: &str = "Uso: offline-dental-system --service | --console --data-directory <caminho-absoluto-Data> | --security-diagnostics --json";
+const USAGE: &str = "Uso: offline-dental-system --service | --console --data-directory <caminho-absoluto-Data> | --security-diagnostics --json | --startup-diagnostics --json";
 
 enum Mode {
     Service,
     Console(PathBuf),
     SecurityDiagnostics,
+    StartupDiagnostics,
     Help,
 }
 
@@ -37,6 +38,11 @@ fn run_main() -> Result<(), &'static str> {
                 .map_err(|_| "SECURITY_DIAGNOSTICS_FAILED")?;
             println!("{json}");
         }
+        Mode::StartupDiagnostics => {
+            let json = offline_dental_system_lib::startup_diagnostics_json()
+                .map_err(|_| "STARTUP_DIAGNOSTICS_FAILED")?;
+            println!("{json}");
+        }
         Mode::Help => println!("{USAGE}"),
     }
     Ok(())
@@ -49,6 +55,9 @@ fn parse_mode(arguments: Vec<OsString>) -> Result<Mode, &'static str> {
     if arguments.len() == 2 && arguments[0] == "--security-diagnostics" && arguments[1] == "--json"
     {
         return Ok(Mode::SecurityDiagnostics);
+    }
+    if arguments.len() == 2 && arguments[0] == "--startup-diagnostics" && arguments[1] == "--json" {
+        return Ok(Mode::StartupDiagnostics);
     }
     if arguments.len() == 3
         && arguments[0] == "--console"
@@ -84,6 +93,11 @@ mod tests {
             parse_mode(vec!["--security-diagnostics".into(), "--json".into()])
                 .expect("diagnostics"),
             Mode::SecurityDiagnostics
+        ));
+        assert!(matches!(
+            parse_mode(vec!["--startup-diagnostics".into(), "--json".into()])
+                .expect("startup diagnostics"),
+            Mode::StartupDiagnostics
         ));
         assert!(matches!(
             parse_mode(vec![

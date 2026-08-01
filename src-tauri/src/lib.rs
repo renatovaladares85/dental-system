@@ -87,6 +87,21 @@ pub fn security_diagnostics_json() -> Result<String, Box<dyn std::error::Error +
     Ok(serde_json::to_string(&diagnostics)?)
 }
 
+pub fn startup_diagnostics_json() -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    #[cfg(windows)]
+    let product_root = env::var_os("ProgramData")
+        .map(PathBuf::from)
+        .map(|path| path.join("OfflineDentalSystem"));
+    #[cfg(not(windows))]
+    let product_root = env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .map(|path| path.join("offline-dental-system"));
+
+    let diagnostics =
+        platform::startup_diagnostics::collect(product_root.as_deref(), product_root.is_some());
+    Ok(serde_json::to_string(&diagnostics)?)
+}
+
 pub fn run_as_windows_service(
     readiness: SyncSender<()>,
     shutdown: Receiver<()>,

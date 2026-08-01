@@ -11,6 +11,7 @@ pub mod discovery;
 pub mod host_identity;
 pub mod instance_lock;
 pub mod pairing;
+pub mod startup_diagnostics;
 pub mod storage_volumes;
 pub mod tls;
 pub mod windows_service;

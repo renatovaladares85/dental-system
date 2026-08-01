@@ -37,9 +37,11 @@ O build é incremental por padrão. Para descartar somente `dist/` e
 pwsh -NoProfile -File .\scripts\dev\build.ps1 -Clean
 ```
 
-O host de desenvolvimento permanece em foreground por padrão. Para liberá-lo
-após o health, use `-Detach`; acompanhe ou encerre somente o processo validado
-pelo PID file com `scripts/dev/status.ps1` e `scripts/dev/stop.ps1`.
+O host de desenvolvimento permanece em foreground por padrão e propaga exit
+code diferente de zero após encerrar. Para liberá-lo após o health, use
+`-Detach`; acompanhe o processo com `scripts/dev/status.ps1`. O
+`scripts/dev/stop.ps1` é uma parada forçada, porém limitada ao PID, executável e
+argumentos validados exatamente; shutdown gracioso via PowerShell não é prometido.
 
 Ferramentas ausentes falham com instrução objetiva; a instalação delas é um bootstrap
 manual separado. O iniciador de desenvolvimento não instala serviço, não altera
@@ -145,6 +147,10 @@ O MSI é o único mecanismo suportado para criar/configurar o serviço. `-Valida
 compila e valida o MSI com fixture temporário, sem assinar nem publicar. A distribuição
 exige executável e MSI assinados, com timestamp válido, antes de produzir assets de
 release. Scripts ZIP legados não são caminho suportado.
+
+Para uma VM Windows descartável existe `installer/build-msi.ps1 -TestInstallationPackage`.
+Ele gera somente `artifacts/test-installer/*-TEST-ONLY-x64.msi`, sem assinatura de
+produção. Sua instalação exige `ODS_TEST_INSTALL=1`; nunca é artefato de release.
 
 ## Diagnóstico seguro
 

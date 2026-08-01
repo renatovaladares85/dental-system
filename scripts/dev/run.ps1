@@ -19,7 +19,6 @@ try {
 }
 
 Assert-OdsLocalPathWithoutReparsePoint $script:DevelopmentRoot
-Assert-OdsPortsAvailable
 $executable = Join-Path $script:RepositoryRoot 'src-tauri\target\debug\offline-dental-system.exe'
 if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) { throw 'Execute scripts/dev/build.ps1 antes de iniciar o host.' }
 
@@ -34,6 +33,7 @@ if (Test-Path -LiteralPath $script:DevelopmentPidFile) {
     }
     Remove-OdsDevelopmentPid
 }
+Assert-OdsPortsAvailable
 $stdout = Join-Path $script:LogDirectory 'web-host.stdout.log'
 $stderr = Join-Path $script:LogDirectory 'web-host.stderr.log'
 $hostProcess = Start-OdsDevelopmentHost `

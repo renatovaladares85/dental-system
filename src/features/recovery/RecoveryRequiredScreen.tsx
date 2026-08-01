@@ -12,7 +12,11 @@ const messages: Record<RecoveryReasonCode, string> = {
   database_unreadable: 'A base local não pôde ser aberta ou validada.',
 };
 
-export function RecoveryRequiredScreen({ reasonCode }: { reasonCode: RecoveryReasonCode }) {
+export function RecoveryRequiredScreen({
+  reasonCode,
+}: {
+  reasonCode: RecoveryReasonCode;
+}) {
   return (
     <main className="flex min-h-screen items-center justify-center bg-slate-50 px-5 py-10">
       <div className="w-full max-w-2xl">
@@ -30,11 +34,15 @@ export function RecoveryRequiredScreen({ reasonCode }: { reasonCode: RecoveryRea
             A instalação foi bloqueada com segurança
           </h1>
           <p className="mx-auto mt-4 max-w-lg text-base leading-7 text-slate-600">
-            {messages[reasonCode]} Nenhuma tentativa de recriar ou substituir arquivos será feita
-            automaticamente.
+            {messages[reasonCode]} Nenhuma tentativa de recriar ou substituir arquivos
+            será feita automaticamente.
           </p>
 
-          <Alert className="mt-7 text-left" variant="warning" title="Preserve os arquivos atuais">
+          <Alert
+            className="mt-7 text-left"
+            variant="warning"
+            title="Preserve os arquivos atuais"
+          >
             Não apague a base, a proteção DPAPI, backups ou pacotes de recuperação. A
             restauração completa será entregue em uma fase posterior.
           </Alert>
@@ -51,7 +59,9 @@ export function RecoveryRequiredScreen({ reasonCode }: { reasonCode: RecoveryRea
               Iniciar recuperação
             </Button>
           </div>
-          <p className="mt-3 text-xs text-slate-500">Recuperação ainda não disponível nesta entrega.</p>
+          <p className="mt-3 text-xs text-slate-500">
+            Recuperação ainda não disponível nesta entrega.
+          </p>
         </Card>
       </div>
     </main>

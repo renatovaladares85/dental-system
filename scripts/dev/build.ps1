@@ -8,6 +8,10 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 Assert-OdsPowerShell7
 if (-not $SkipChecks) { & (Join-Path $PSScriptRoot 'check.ps1') }
+Update-OdsProcessPath
+$vsDeveloperCommand = Get-OdsVsDeveloperCommand
+if (-not $vsDeveloperCommand) { throw 'Visual Studio C++ Build Tools não encontrado.' }
+Import-OdsVsDeveloperEnvironment $vsDeveloperCommand
 
 foreach ($path in @(
     (Join-Path $script:RepositoryRoot 'dist'),
@@ -18,13 +22,13 @@ foreach ($path in @(
 
 Push-Location $script:RepositoryRoot
 try {
-    Invoke-OdsNative 'npm.cmd' 'ci'
-    Invoke-OdsNative 'npm.cmd' 'run' 'format:check'
-    Invoke-OdsNative 'npm.cmd' 'run' 'lint'
-    Invoke-OdsNative 'npm.cmd' 'run' 'typecheck'
-    if (-not $SkipTests) { Invoke-OdsNative 'npm.cmd' 'test' }
-    Invoke-OdsNative 'npm.cmd' 'run' 'build'
-    Invoke-OdsNative 'npm.cmd' 'run' 'verify:pwa'
+    Invoke-OdsNpm 'ci'
+    Invoke-OdsNpm 'run' 'format:check'
+    Invoke-OdsNpm 'run' 'lint'
+    Invoke-OdsNpm 'run' 'typecheck'
+    if (-not $SkipTests) { Invoke-OdsNpm 'test' }
+    Invoke-OdsNpm 'run' 'build'
+    Invoke-OdsNpm 'run' 'verify:pwa'
 
     Invoke-OdsNative 'cargo.exe' 'fmt' '--manifest-path' $script:CargoManifest '--all' '--' '--check'
     Invoke-OdsNative 'cargo.exe' 'clippy' '--manifest-path' $script:CargoManifest '--locked' '--all-targets' '--all-features' '--' '-D' 'warnings'

@@ -159,7 +159,10 @@ mod windows {
         stop_service(&status, result)
     }
 
-    fn stop_service(status: &ServiceStatusHandle, result: PlatformResult<()>) -> PlatformResult<()> {
+    fn stop_service(
+        status: &ServiceStatusHandle,
+        result: PlatformResult<()>,
+    ) -> PlatformResult<()> {
         let exit_code = if result.is_ok() {
             ServiceExitCode::Win32(0)
         } else {

@@ -10,7 +10,10 @@ use std::{
     future::Future,
     net::SocketAddr,
     path::{Path, PathBuf},
-    sync::{Arc, Once, mpsc::{Receiver, SyncSender}},
+    sync::{
+        Arc, Once,
+        mpsc::{Receiver, SyncSender},
+    },
     time::Duration,
 };
 
@@ -99,7 +102,8 @@ async fn run_with_paths(
     let run_id = Uuid::now_v7();
     init_tracing(&product_root, run_id, mode)?;
     tracing::info!(event = "PRODUCT_ROOT_RESOLVED", run_id = %run_id, mode);
-    std::fs::create_dir_all(&data_directory).map_err(|_| startup_failed("STARTUP_DATA_DIRECTORY_FAILED"))?;
+    std::fs::create_dir_all(&data_directory)
+        .map_err(|_| startup_failed("STARTUP_DATA_DIRECTORY_FAILED"))?;
     tracing::info!(event = "DATA_DIRECTORY_READY", run_id = %run_id);
     let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -112,19 +116,21 @@ async fn run_with_paths(
     let installation_id = Uuid::parse_str(&host.installation_id)
         .map_err(|_| startup_failed("STARTUP_HOST_IDENTITY_FAILED"))?;
 
-    let tls_manager = Arc::new(TlsIdentityManager::new(
-        &product_root,
-        PlatformKeyProtector::new(),
-    ).map_err(|_| startup_failed("STARTUP_TLS_FAILED"))?);
+    let tls_manager = Arc::new(
+        TlsIdentityManager::new(&product_root, PlatformKeyProtector::new())
+            .map_err(|_| startup_failed("STARTUP_TLS_FAILED"))?,
+    );
     let pairing_manager = Arc::new(PairingManager::new());
     let pairing = Arc::new(PlatformPairingAdapter::new(pairing_manager));
     match tls_manager.ensure_identity(&host.installation_id, &host.hostname, Utc::now()) {
         Ok(identity) => {
-            pairing.update_identity(
-                host.hostname.clone(),
-                identity.ca_fingerprint_sha256,
-                identity.ca_certificate_der,
-            ).map_err(|_| startup_failed("STARTUP_TLS_FAILED"))?;
+            pairing
+                .update_identity(
+                    host.hostname.clone(),
+                    identity.ca_fingerprint_sha256,
+                    identity.ca_certificate_der,
+                )
+                .map_err(|_| startup_failed("STARTUP_TLS_FAILED"))?;
             tracing::info!(event = "TLS_IDENTITY_READY", run_id = %run_id);
         }
         Err(_) => {
@@ -477,8 +483,7 @@ fn init_tracing(
         .filename_suffix("jsonl")
         .max_log_files(30)
         .build(log_directory)?;
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,tower_http=warn"));
+    let filter = tracing_subscriber::EnvFilter::new("info,tower_http=warn");
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .json()

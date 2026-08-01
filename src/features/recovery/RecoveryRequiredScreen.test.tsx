@@ -20,8 +20,12 @@ describe('RecoveryRequiredScreen', () => {
         screen.getByRole('heading', { name: 'A instalação foi bloqueada com segurança' }),
       ).toBeInTheDocument();
       expect(screen.getByText(expectedMessage, { exact: false })).toBeInTheDocument();
-      expect(screen.getByText(/Não apague a base, a proteção DPAPI, backups/)).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Selecionar pacote .odskey' })).toBeDisabled();
+      expect(
+        screen.getByText(/Não apague a base, a proteção DPAPI, backups/),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: 'Selecionar pacote .odskey' }),
+      ).toBeDisabled();
       expect(screen.getByRole('button', { name: 'Iniciar recuperação' })).toBeDisabled();
       expect(
         screen.getByText('Recuperação ainda não disponível nesta entrega.'),

@@ -18,15 +18,70 @@ function Test-OdsCommand([string]$Name) {
     return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
+function Update-OdsProcessPath {
+    $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $env:Path = @($machinePath, $userPath, $env:Path) |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Select-Object -Unique |
+        Join-String -Separator ';'
+
+    $machinePathExt = [Environment]::GetEnvironmentVariable('PATHEXT', 'Machine')
+    $userPathExt = [Environment]::GetEnvironmentVariable('PATHEXT', 'User')
+    $env:PATHEXT = @($machinePathExt, $userPathExt, $env:PATHEXT, '.COM;.EXE;.BAT;.CMD') |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Select-Object -Unique |
+        Join-String -Separator ';'
+}
+
+function Get-OdsVsDeveloperCommand {
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (Test-Path -LiteralPath $vswhere -PathType Leaf) {
+        $global:LASTEXITCODE = 0
+        $installation = & $vswhere -latest -products '*' `
+            -requires 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' `
+            -property installationPath
+        if ($LASTEXITCODE -eq 0 -and $installation) {
+            $candidate = Join-Path $installation.Trim() 'Common7\Tools\VsDevCmd.bat'
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+        }
+    }
+
+    $fallback = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\2022\BuildTools'
+    $developerCommand = Join-Path $fallback 'Common7\Tools\VsDevCmd.bat'
+    $compiler = Get-ChildItem -LiteralPath $fallback -Filter 'cl.exe' -File -Recurse `
+        -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ((Test-Path -LiteralPath $developerCommand -PathType Leaf) -and $compiler) {
+        return $developerCommand
+    }
+    return $null
+}
+
+function Import-OdsVsDeveloperEnvironment([string]$DeveloperCommand) {
+    $global:LASTEXITCODE = 0
+    $capture = cmd.exe /d /s /c "call `"$DeveloperCommand`" -no_logo -arch=x64 -host_arch=x64 && set"
+    if ($LASTEXITCODE -ne 0) { throw 'Falha ao carregar o ambiente MSVC x64.' }
+    foreach ($line in $capture) {
+        $separator = $line.IndexOf('=')
+        if ($separator -le 0) { continue }
+        [Environment]::SetEnvironmentVariable(
+            $line.Substring(0, $separator),
+            $line.Substring($separator + 1),
+            'Process'
+        )
+    }
+}
+
 function Invoke-OdsNative {
     param(
-        [Parameter(Mandatory)][string]$FilePath,
-        [Parameter(ValueFromRemainingArguments)][string[]]$Arguments,
-        [int[]]$AcceptedExitCodes = @(0)
+        [Parameter(Mandatory, Position = 0)][string]$FilePath,
+        [int[]]$AcceptedExitCodes = @(0),
+        [Parameter(ValueFromRemainingArguments, Position = 1)][string[]]$Arguments
     )
 
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $FilePath
+    $startInfo.WorkingDirectory = $script:RepositoryRoot
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardOutput = $true
@@ -55,6 +110,20 @@ function Invoke-OdsNative {
         throw "O comando '$FilePath' falhou com código $exitCode."
     }
     return [pscustomobject]@{ ExitCode = $exitCode; StdOut = $stdout; StdErr = $stderr }
+}
+
+function Invoke-OdsNpm {
+    param(
+        [Parameter(ValueFromRemainingArguments, Position = 0)][string[]]$Arguments
+    )
+
+    $npmCommand = Get-Command 'npm.cmd' -ErrorAction Stop
+    $npmDirectory = Split-Path -Parent $npmCommand.Source
+    $npmCli = Join-Path $npmDirectory 'node_modules\npm\bin\npm-cli.js'
+    if (-not (Test-Path -LiteralPath $npmCli -PathType Leaf)) {
+        throw "Não foi possível localizar npm-cli.js a partir de '$($npmCommand.Source)'."
+    }
+    Invoke-OdsNative 'node.exe' $npmCli @Arguments
 }
 
 function Start-OdsNative {

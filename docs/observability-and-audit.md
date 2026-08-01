@@ -11,10 +11,10 @@ Cliques, digitação, senhas, tokens, CSRF, códigos de recuperação, corpos HT
 
 ## Localização
 
-| Registro                 | Caminho                                                        | Retenção                                                               |
-| ------------------------ | -------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| Serviço/API              | `%ProgramData%\OfflineDentalSystem\logs\runtime\*.jsonl`      | rotação diária, até 30 arquivos                                        |
-| Auditoria                | tabela cifrada `audit_events`                                  | append-only; política definitiva será definida antes de dados clínicos |
+| Registro    | Caminho                                                  | Retenção                                                               |
+| ----------- | -------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Serviço/API | `%ProgramData%\OfflineDentalSystem\logs\runtime\*.jsonl` | rotação diária, até 30 arquivos                                        |
+| Auditoria   | tabela cifrada `audit_events`                            | append-only; política definitiva será definida antes de dados clínicos |
 
 O instalador exibe o caminho exato do log em caso de sucesso ou falha. A execução normal e a execução elevada compartilham o mesmo `runId`, portanto o erro administrativo não desaparece quando a janela do UAC fecha.
 

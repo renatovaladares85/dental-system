@@ -131,7 +131,41 @@ if ($null -eq $wix -and $env:ODS_WIX_EXE) {
 if ($null -eq $wix) {
     throw "WiX Toolset $wixVersion ausente. Instale-o globalmente ou defina ODS_WIX_EXE para uma cópia portátil fixada."
 }
-$detectedWix = (& $wix.Source '--version' | Select-Object -First 1).Trim()
+
+function ConvertTo-WindowsCommandLine([string[]]$Arguments) {
+    return ($Arguments | ForEach-Object {
+        $value = [string]$_
+        if ($value.Length -eq 0) { return '""' }
+        if ($value -notmatch '[\s"]') { return $value }
+        $escaped = [regex]::Replace($value, '(\\*)"', '$1$1\\"')
+        $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
+        return '"' + $escaped + '"'
+    }) -join ' '
+}
+
+function Invoke-Wix([string[]]$Arguments) {
+    $stdout = [IO.Path]::GetTempFileName()
+    $stderr = [IO.Path]::GetTempFileName()
+    try {
+        $process = Start-Process -FilePath $wix.Source `
+            -ArgumentList (ConvertTo-WindowsCommandLine $Arguments) `
+            -RedirectStandardOutput $stdout `
+            -RedirectStandardError $stderr `
+            -Wait -PassThru -NoNewWindow
+        $output = Get-Content -LiteralPath $stdout -Raw
+        $errorOutput = Get-Content -LiteralPath $stderr -Raw
+        if ($output) { Write-Host $output.TrimEnd() }
+        if ($errorOutput) { Write-Error $errorOutput.TrimEnd() -ErrorAction Continue }
+        if ($process.ExitCode -ne 0) {
+            throw "WiX falhou com código $($process.ExitCode)."
+        }
+        return $output
+    } finally {
+        Remove-Item -LiteralPath $stdout, $stderr -Force -ErrorAction SilentlyContinue
+    }
+}
+
+$detectedWix = (Invoke-Wix @('--version')).Trim()
 if ($detectedWix -notmatch '^4\.0\.6(?:\+|$)') {
     throw "WiX $wixVersion é obrigatório; detectado: $detectedWix."
 }
@@ -139,8 +173,7 @@ if ($detectedWix -notmatch '^4\.0\.6(?:\+|$)') {
 foreach ($extension in @('WixToolset.Firewall.wixext', 'WixToolset.Util.wixext')) {
     # `extension add` is idempotent and also handles an initially empty global
     # cache (for which WiX 4 returns a non-zero status from `extension list`).
-    & $wix.Source 'extension' 'add' '-g' "$extension/$wixVersion"
-    if ($LASTEXITCODE -ne 0) { throw "Falha ao instalar a extensão WiX $extension/$wixVersion." }
+    $null = Invoke-Wix @('extension', 'add', '-g', "$extension/$wixVersion")
 }
 
 function Find-SignTool {
@@ -213,21 +246,21 @@ $temporaryDirectory = Join-Path ([IO.Path]::GetTempPath()) ("offline-dental-msi-
 New-Item -ItemType Directory -Path $temporaryDirectory | Out-Null
 $temporaryMsi = Join-Path $temporaryDirectory "OfflineDentalSystem-$productVersion-x64.msi"
 try {
-    & $wix.Source 'build' $packageSource `
-        '-arch' 'x64' `
-        '-ext' "WixToolset.Firewall.wixext/$wixVersion" `
-        '-ext' "WixToolset.Util.wixext/$wixVersion" `
-        '-d' "ProductVersion=$productVersion" `
-        '-d' "ServerExecutable=$ServerExecutable" `
-        '-d' "ProductLicenseFile=$ProductLicenseFile" `
-        '-d' "ConfigureServiceScript=$configureServiceScript" `
-        '-d' "ConfigureHostTrustScript=$configureScript" `
-        '-d' "ApplicationIcon=$applicationIcon" `
-        '-o' $temporaryMsi
-    if ($LASTEXITCODE -ne 0) { throw 'Compilação WiX falhou.' }
+    $null = Invoke-Wix @(
+        'build', $packageSource,
+        '-arch', 'x64',
+        '-ext', "WixToolset.Firewall.wixext/$wixVersion",
+        '-ext', "WixToolset.Util.wixext/$wixVersion",
+        '-d', "ProductVersion=$productVersion",
+        '-d', "ServerExecutable=$ServerExecutable",
+        '-d', "ProductLicenseFile=$ProductLicenseFile",
+        '-d', "ConfigureServiceScript=$configureServiceScript",
+        '-d', "ConfigureHostTrustScript=$configureScript",
+        '-d', "ApplicationIcon=$applicationIcon",
+        '-o', $temporaryMsi
+    )
 
-    & $wix.Source 'msi' 'validate' $temporaryMsi
-    if ($LASTEXITCODE -ne 0) { throw 'Validação MSI falhou.' }
+    $null = Invoke-Wix @('msi', 'validate', $temporaryMsi)
 
     if ($ValidationOnly) {
         Write-Host 'SUCESSO: fonte WiX compilada/validada; MSI temporário será removido (não distribuível).' -ForegroundColor Green

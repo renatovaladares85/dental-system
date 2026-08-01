@@ -35,8 +35,12 @@ function Update-OdsProcessPath {
 }
 
 function Get-OdsVsDeveloperCommand {
-    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-    if (Test-Path -LiteralPath $vswhere -PathType Leaf) {
+    $vswhereCandidates = @(
+        (Get-Command 'vswhere.exe' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1),
+        (Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe')
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -Unique
+
+    foreach ($vswhere in $vswhereCandidates) {
         $global:LASTEXITCODE = 0
         $installation = & $vswhere -latest -products '*' `
             -requires 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' `
@@ -46,20 +50,17 @@ function Get-OdsVsDeveloperCommand {
             if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
         }
     }
-
-    $fallback = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\2022\BuildTools'
-    $developerCommand = Join-Path $fallback 'Common7\Tools\VsDevCmd.bat'
-    $compiler = Get-ChildItem -LiteralPath $fallback -Filter 'cl.exe' -File -Recurse `
-        -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ((Test-Path -LiteralPath $developerCommand -PathType Leaf) -and $compiler) {
-        return $developerCommand
-    }
     return $null
 }
 
-function Import-OdsVsDeveloperEnvironment([string]$DeveloperCommand) {
+function Import-OdsVisualStudioEnvironment {
+    $developerCommand = Get-OdsVsDeveloperCommand
+    if (-not $developerCommand) {
+        throw 'Visual Studio C++ Build Tools com o componente x64 não foi encontrado via vswhere.exe.'
+    }
+
     $global:LASTEXITCODE = 0
-    $capture = cmd.exe /d /s /c "call `"$DeveloperCommand`" -no_logo -arch=x64 -host_arch=x64 && set"
+    $capture = cmd.exe /d /s /c "call `"$developerCommand`" -no_logo -arch=x64 -host_arch=x64 && set"
     if ($LASTEXITCODE -ne 0) { throw 'Falha ao carregar o ambiente MSVC x64.' }
     foreach ($line in $capture) {
         $separator = $line.IndexOf('=')
@@ -69,6 +70,12 @@ function Import-OdsVsDeveloperEnvironment([string]$DeveloperCommand) {
             $line.Substring($separator + 1),
             'Process'
         )
+    }
+
+    foreach ($command in 'cl.exe', 'link.exe', 'lib.exe', 'rc.exe') {
+        if (-not (Test-OdsCommand $command)) {
+            throw "O ambiente MSVC x64 foi carregado, mas '$command' não está disponível."
+        }
     }
 }
 

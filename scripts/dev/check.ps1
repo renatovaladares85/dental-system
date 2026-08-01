@@ -31,8 +31,7 @@ if ($installedTargets -notmatch '(?m)^x86_64-pc-windows-msvc$') {
     throw 'O target x86_64-pc-windows-msvc não está instalado.'
 }
 
-$vsDeveloperCommand = Get-OdsVsDeveloperCommand
-if (-not $vsDeveloperCommand) { throw 'Visual Studio C++ Build Tools não encontrado.' }
+Import-OdsVisualStudioEnvironment
 if (-not (Get-ChildItem (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Include') -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path (Join-Path $_.FullName 'um\Windows.h') })) {
     throw 'Windows SDK não encontrado.'
 }

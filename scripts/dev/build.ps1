@@ -8,9 +8,12 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 Assert-OdsPowerShell7
-if (-not $SkipChecks) { & (Join-Path $PSScriptRoot 'check.ps1') }
-Update-OdsProcessPath
-Import-OdsVisualStudioEnvironment
+if (-not $SkipChecks) {
+    & (Join-Path $PSScriptRoot 'check.ps1')
+} else {
+    Update-OdsProcessPath
+    Import-OdsVisualStudioEnvironment
+}
 
 if ($Clean) {
     foreach ($path in @(

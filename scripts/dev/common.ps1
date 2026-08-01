@@ -22,8 +22,12 @@ function Test-OdsCommand([string]$Name) {
 function Update-OdsProcessPath {
     $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $pathSeparator = [IO.Path]::PathSeparator
     $env:Path = @($machinePath, $userPath, $env:Path) |
         Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        ForEach-Object { $_ -split [regex]::Escape([string]$pathSeparator) } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        ForEach-Object { $_.Trim() } |
         Select-Object -Unique |
         Join-String -Separator ';'
 
@@ -33,6 +37,15 @@ function Update-OdsProcessPath {
         Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
         Select-Object -Unique |
         Join-String -Separator ';'
+}
+
+function Test-OdsVisualStudioEnvironment {
+    foreach ($command in 'cl.exe', 'link.exe', 'lib.exe', 'rc.exe') {
+        if (-not (Test-OdsCommand $command)) { return $false }
+    }
+    if ($env:VSCMD_ARG_TGT_ARCH -and $env:VSCMD_ARG_TGT_ARCH -ne 'x64') { return $false }
+    if ($env:VSCMD_ARG_HOST_ARCH -and $env:VSCMD_ARG_HOST_ARCH -ne 'x64') { return $false }
+    return $true
 }
 
 function Get-OdsVsDeveloperCommand {
@@ -55,6 +68,7 @@ function Get-OdsVsDeveloperCommand {
 }
 
 function Import-OdsVisualStudioEnvironment {
+    if (Test-OdsVisualStudioEnvironment) { return }
     $developerCommand = Get-OdsVsDeveloperCommand
     if (-not $developerCommand) {
         throw 'Visual Studio C++ Build Tools com o componente x64 não foi encontrado via vswhere.exe.'
@@ -73,10 +87,8 @@ function Import-OdsVisualStudioEnvironment {
         )
     }
 
-    foreach ($command in 'cl.exe', 'link.exe', 'lib.exe', 'rc.exe') {
-        if (-not (Test-OdsCommand $command)) {
-            throw "O ambiente MSVC x64 foi carregado, mas '$command' não está disponível."
-        }
+    if (-not (Test-OdsVisualStudioEnvironment)) {
+        throw "O ambiente MSVC x64 foi carregado, mas uma ferramenta obrigatória ou arquitetura x64 não está disponível."
     }
 }
 

@@ -1,6 +1,7 @@
 ﻿[CmdletBinding()]
 param(
     [switch]$ValidationOnly,
+    [switch]$TestInstallationPackage,
     [string]$ServerExecutable,
     [string]$ProductLicenseFile,
     [string]$OutputDirectory
@@ -29,6 +30,16 @@ $configureScript = Join-Path $installerRoot 'configure-host-trust.ps1'
 $applicationIcon = Join-Path $repositoryRoot 'src-tauri\icons\icon.ico'
 $minimumSqlCipher = [version]'4.17.0'
 $wixVersion = '4.0.6'
+
+if ($ValidationOnly -and $TestInstallationPackage) {
+    throw 'ValidationOnly e TestInstallationPackage são mutuamente exclusivos.'
+}
+if ($TestInstallationPackage -and $OutputDirectory) {
+    throw 'TestInstallationPackage usa exclusivamente artifacts\test-installer e não aceita OutputDirectory.'
+}
+if ($TestInstallationPackage -and $env:ODS_SIGNING_CERT_THUMBPRINT) {
+    throw 'TestInstallationPackage não pode usar credenciais de assinatura de produção.'
+}
 
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or
     -not [Environment]::Is64BitOperatingSystem) {
@@ -93,12 +104,12 @@ if ($diagnostics.sqlcipherVersion) {
     $cipherVersion = [version]$diagnostics.sqlcipherVersion
 }
 $distributionReady = $diagnostics.distributionReady -is [bool] -and $diagnostics.distributionReady -eq $true
-if (-not $ValidationOnly -and
+if (-not $ValidationOnly -and -not $TestInstallationPackage -and
     ($null -eq $cipherVersion -or $cipherVersion -lt $minimumSqlCipher -or -not $distributionReady)) {
     throw "Distribuição bloqueada: SQLCipher >= $minimumSqlCipher e distributionReady=true são obrigatórios."
 }
 
-if ($ValidationOnly) {
+if ($ValidationOnly -or $TestInstallationPackage) {
     $script:ValidationLicenseFile = [IO.Path]::GetTempFileName()
     [IO.File]::WriteAllText(
         $script:ValidationLicenseFile,
@@ -114,7 +125,7 @@ if (-not $ProductLicenseFile -or -not (Test-Path -LiteralPath $ProductLicenseFil
 }
 $ProductLicenseFile = [IO.Path]::GetFullPath($ProductLicenseFile)
 if ((Get-Item -LiteralPath $ProductLicenseFile).Length -eq 0) { throw 'O arquivo de licença está vazio.' }
-if (-not $ValidationOnly -and
+if (-not $ValidationOnly -and -not $TestInstallationPackage -and
     ($ProductLicenseFile.Equals($script:ValidationLicenseFile, [StringComparison]::OrdinalIgnoreCase) -or
      (Get-Content -Raw -LiteralPath $ProductLicenseFile) -match '(?i)NOT[ -]FOR[ -]DISTRIBUTION')) {
     throw 'Distribuição bloqueada: o marcador de validação não é uma licença de produto.'
@@ -230,7 +241,7 @@ function Sign-And-Verify([string]$Path) {
     Assert-ExpectedSignature $Path $thumbprint
 }
 
-if (-not $ValidationOnly) {
+if (-not $ValidationOnly -and -not $TestInstallationPackage) {
     $expectedThumbprint = Get-ExpectedSigningThumbprint
     $signature = Get-AuthenticodeSignature -LiteralPath $ServerExecutable
     if ($signature.Status -eq 'NotSigned') {
@@ -257,6 +268,7 @@ try {
         '-d', "ConfigureServiceScript=$configureServiceScript",
         '-d', "ConfigureHostTrustScript=$configureScript",
         '-d', "ApplicationIcon=$applicationIcon",
+        '-d', ("TestPackage=" + $(if ($TestInstallationPackage) { 'true' } else { 'false' })),
         '-o', $temporaryMsi
     )
 
@@ -264,6 +276,16 @@ try {
 
     if ($ValidationOnly) {
         Write-Host 'SUCESSO: fonte WiX compilada/validada; MSI temporário será removido (não distribuível).' -ForegroundColor Green
+        return
+    }
+
+    if ($TestInstallationPackage) {
+        $outputRoot = Join-Path $repositoryRoot 'artifacts\test-installer'
+        New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
+        $output = Join-Path $outputRoot "OfflineDentalSystem-$productVersion-TEST-ONLY-x64.msi"
+        if (Test-Path -LiteralPath $output) { throw "O pacote de teste '$output' já existe; sobrescrita foi recusada." }
+        Copy-Item -LiteralPath $temporaryMsi -Destination $output
+        Write-Host "SUCESSO: pacote TEST-ONLY criado em '$output'. Instale somente com ODS_TEST_INSTALL=1." -ForegroundColor Yellow
         return
     }
 

@@ -51,14 +51,24 @@ while ([DateTime]::UtcNow -lt $deadline -and -not $hostProcess.HasExited) {
             $hostProcess.Dispose()
             return
         }
+        $exitCode = $null
         try {
             $hostProcess.WaitForExit()
         } finally {
             if (-not $hostProcess.HasExited) {
                 [void]$hostProcess.WaitForExit(10000)
             }
-            if ($hostProcess.HasExited) { Remove-OdsDevelopmentPid }
+            if ($hostProcess.HasExited) {
+                $exitCode = $hostProcess.ExitCode
+                Remove-OdsDevelopmentPid
+            }
             $hostProcess.Dispose()
+        }
+        if ($null -eq $exitCode) {
+            throw "O host não encerrou após a interrupção. Consulte '$stdout' e '$stderr'."
+        }
+        if ($exitCode -ne 0) {
+            throw "O host encerrou inesperadamente com código $exitCode. Consulte '$stdout' e '$stderr'."
         }
         return
     }

@@ -157,6 +157,10 @@ jobs:
         shell: pwsh
         run: .\scripts\tests\configure-service.tests.ps1
 
+      - name: Testar validação do PID de desenvolvimento
+        shell: pwsh
+        run: .\scripts\tests\development-host-pid.tests.ps1
+
       - name: Verificar formatação Rust
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 

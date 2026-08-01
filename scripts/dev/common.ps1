@@ -180,6 +180,64 @@ function Remove-OdsDevelopmentPid {
     }
 }
 
+function ConvertFrom-OdsWindowsCommandLine([string]$CommandLine) {
+    if (-not ('OdsCommandLineParser' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class OdsCommandLineParser {
+    [DllImport("shell32.dll", SetLastError = true)]
+    private static extern IntPtr CommandLineToArgvW(string commandLine, out int argumentCount);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr LocalFree(IntPtr memory);
+
+    public static string[] Parse(string commandLine) {
+        int argumentCount;
+        IntPtr arguments = CommandLineToArgvW(commandLine, out argumentCount);
+        if (arguments == IntPtr.Zero) { throw new System.ComponentModel.Win32Exception(); }
+        try {
+            var result = new string[argumentCount];
+            for (int index = 0; index < argumentCount; index++) {
+                IntPtr value = Marshal.ReadIntPtr(arguments, index * IntPtr.Size);
+                result[index] = Marshal.PtrToStringUni(value);
+            }
+            return result;
+        } finally {
+            LocalFree(arguments);
+        }
+    }
+}
+'@
+    }
+    return [OdsCommandLineParser]::Parse($CommandLine)
+}
+
+function Test-OdsDevelopmentHostArguments {
+    param(
+        [Parameter(Mandatory)][string[]]$ActualArguments,
+        [Parameter(Mandatory)][string]$ExpectedExecutable,
+        [Parameter(Mandatory)][string]$ExpectedDataDirectory
+    )
+
+    if ($ActualArguments.Count -ne 4) { return $false }
+    $expected = @(
+        [IO.Path]::GetFullPath($ExpectedExecutable),
+        '--console',
+        '--data-directory',
+        [IO.Path]::GetFullPath($ExpectedDataDirectory)
+    )
+    for ($index = 0; $index -lt $expected.Count; $index++) {
+        if ($index -in 0, 3) {
+            if (-not $ActualArguments[$index].Equals($expected[$index], [StringComparison]::OrdinalIgnoreCase)) { return $false }
+        } elseif ($ActualArguments[$index] -cne $expected[$index]) {
+            return $false
+        }
+    }
+    return $true
+}
+
 function Get-OdsDevelopmentHost {
     if (-not (Test-Path -LiteralPath $script:DevelopmentPidFile -PathType Leaf)) { return $null }
     try {
@@ -192,14 +250,17 @@ function Get-OdsDevelopmentHost {
         return [pscustomobject]@{ State = 'not-running'; Metadata = $metadata; Process = $null }
     }
 
-    $expectedExecutable = [IO.Path]::GetFullPath([string]$metadata.executable)
-    $expectedData = [IO.Path]::GetFullPath([string]$metadata.dataDirectory)
-    $commandLine = [string]$process.CommandLine
-    $matchesExpectedHost = $process.ExecutablePath -and
-        [IO.Path]::GetFullPath([string]$process.ExecutablePath).Equals($expectedExecutable, [StringComparison]::OrdinalIgnoreCase) -and
-        $commandLine -match '(?i)(?:^|\s)--console(?:\s|$)' -and
-        $commandLine -match '(?i)(?:^|\s)--data-directory(?:\s|$)' -and
-        $commandLine.Contains($expectedData, [StringComparison]::OrdinalIgnoreCase)
+    try {
+        $expectedExecutable = [IO.Path]::GetFullPath([string]$metadata.executable)
+        $expectedData = [IO.Path]::GetFullPath([string]$metadata.dataDirectory)
+        $startedAtUtc = [DateTime]::Parse([string]$metadata.startedAtUtc).ToUniversalTime()
+        $commandArguments = ConvertFrom-OdsWindowsCommandLine ([string]$process.CommandLine)
+        $matchesExpectedHost = $process.ExecutablePath -and $startedAtUtc -le [DateTime]::UtcNow -and
+            [IO.Path]::GetFullPath([string]$process.ExecutablePath).Equals($expectedExecutable, [StringComparison]::OrdinalIgnoreCase) -and
+            (Test-OdsDevelopmentHostArguments -ActualArguments $commandArguments -ExpectedExecutable $expectedExecutable -ExpectedDataDirectory $expectedData)
+    } catch {
+        $matchesExpectedHost = $false
+    }
     if (-not $matchesExpectedHost) {
         return [pscustomobject]@{ State = 'divergent'; Metadata = $metadata; Process = $process }
     }

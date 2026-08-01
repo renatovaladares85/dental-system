@@ -100,6 +100,16 @@ jobs:
             throw 'Há scripts PowerShell com erros de sintaxe.'
           }
 
+      - name: Analisar segurança dos scripts PowerShell
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.24.0 -Scope CurrentUser -Force
+          $issues = @(Invoke-ScriptAnalyzer -Path scripts, installer -Settings PSScriptAnalyzerSettings.psd1)
+          if ($issues.Count -gt 0) {
+            $issues | Format-Table -AutoSize
+            throw 'PSScriptAnalyzer encontrou problemas nos scripts Windows.'
+          }
+
       - name: Testar ciclo do serviço Windows
         shell: powershell
         run: .\scripts\tests\windows-service.tests.ps1
@@ -144,29 +154,58 @@ jobs:
       - name: Compilar servidor Rust com a SPA incorporada
         run: cargo build --manifest-path src-tauri/Cargo.toml --locked --all-features
 
-      - name: Validar pacote portátil e bootstrapper
+      - name: Console smoke
         shell: pwsh
         run: |
-          $output = Join-Path $env:RUNNER_TEMP 'ods-portable-validation'
-          .\scripts\build-portable-package.ps1 `
-            -Development `
-            -ServerExecutable .\src-tauri\target\debug\offline-dental-system.exe `
-            -OutputDirectory $output
-          $package = Get-ChildItem -LiteralPath $output -Filter 'OfflineDentalSystem-*-windows-x64.zip' -File -Recurse
-          if (@($package).Count -ne 1) { throw 'O build portátil não produziu exatamente um ZIP.' }
-          .\scripts\install-local.ps1 `
-            -PackagePath $package.FullName `
-            -AllowDevelopmentPackage `
-            -ValidatePackageOnly `
-            -LogPath (Join-Path $env:LOCALAPPDATA 'OfflineDentalSystem\Logs\ci-install.jsonl')
-          $installLog = Join-Path $env:LOCALAPPDATA 'OfflineDentalSystem\Logs\ci-install.jsonl'
-          $installEvents = Get-Content -Encoding UTF8 $installLog | ForEach-Object { $_ | ConvertFrom-Json }
-          if ('PACKAGE_VALIDATION_COMPLETED' -notin @($installEvents.event)) {
-            throw 'O log estruturado não registrou a validação do pacote.'
+          $root = Join-Path $env:RUNNER_TEMP ('ods-console-' + [guid]::NewGuid().ToString('N'))
+          $data = Join-Path $root 'Data'
+          $stdout = Join-Path $root 'stdout.log'
+          $stderr = Join-Path $root 'stderr.log'
+          New-Item -ItemType Directory -Force -Path $data | Out-Null
+          $info = [Diagnostics.ProcessStartInfo]::new()
+          $info.FileName = (Resolve-Path '.\src-tauri\target\debug\offline-dental-system.exe')
+          $info.UseShellExecute = $false
+          $info.RedirectStandardOutput = $true
+          $info.RedirectStandardError = $true
+          [void]$info.ArgumentList.Add('--console')
+          [void]$info.ArgumentList.Add('--data-directory')
+          [void]$info.ArgumentList.Add($data)
+          $process = [Diagnostics.Process]::new()
+          $process.StartInfo = $info
+          if (-not $process.Start()) { throw 'Não foi possível iniciar o console host.' }
+          $outputTask = $process.StandardOutput.ReadToEndAsync()
+          $errorTask = $process.StandardError.ReadToEndAsync()
+          try {
+            $deadline = [DateTime]::UtcNow.AddSeconds(45)
+            do {
+              try {
+                $response = Invoke-WebRequest 'http://127.0.0.1:8742/api/v1/health' -TimeoutSec 2
+                $payload = $response.Content | ConvertFrom-Json
+                if ($response.StatusCode -eq 200 -and
+                    $response.Headers['Content-Type'] -like 'application/json*' -and
+                    $response.Headers['Cache-Control'] -match 'no-store' -and
+                    $payload.status -eq 'ok') { break }
+              } catch {}
+              Start-Sleep -Milliseconds 500
+            } while ([DateTime]::UtcNow -lt $deadline -and -not $process.HasExited)
+            if ($process.HasExited -or -not $response -or $payload.status -ne 'ok') {
+              throw 'O console host não respondeu ao health esperado.'
+            }
+          } finally {
+            if (-not $process.HasExited) { $process.Kill() }
+            $process.WaitForExit()
+            [IO.File]::WriteAllText($stdout, $outputTask.GetAwaiter().GetResult())
+            [IO.File]::WriteAllText($stderr, $errorTask.GetAwaiter().GetResult())
+            $process.Dispose()
           }
-          $uninstallLog = Join-Path $env:LOCALAPPDATA 'OfflineDentalSystem\Logs\ci-uninstall.jsonl'
-          .\scripts\uninstall-local.ps1 -PlanOnly -LogPath $uninstallLog | ConvertFrom-Json | Out-Null
-          Get-Content -Encoding UTF8 $uninstallLog | ForEach-Object { $_ | ConvertFrom-Json } | Out-Null
+
+      - name: Validar MSI sem publicar
+        shell: pwsh
+        run: |
+          cargo build --manifest-path src-tauri/Cargo.toml --locked --all-features --release
+          dotnet tool install --global wix --version 4.0.6
+          $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
+          .\installer\build-msi.ps1 -ValidationOnly
 
       - name: Instalar ferramentas de auditoria fixadas
         run: |
@@ -193,5 +232,5 @@ jobs:
           }
           $licenses | Sort-Object name | Format-Table name, version, license, license_file
 
-# Este workflow valida código-fonte, binário e pacote portátil de desenvolvimento.
+# Este workflow valida código-fonte, binário console e MSI sem publicar.
 # Ele não assina, não publica e não cria release.

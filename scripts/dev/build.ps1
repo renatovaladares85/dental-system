@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [switch]$SkipChecks,
-    [switch]$SkipTests
+    [switch]$SkipTests,
+    [switch]$Clean
 )
 
 $ErrorActionPreference = 'Stop'
@@ -9,15 +10,15 @@ $ErrorActionPreference = 'Stop'
 Assert-OdsPowerShell7
 if (-not $SkipChecks) { & (Join-Path $PSScriptRoot 'check.ps1') }
 Update-OdsProcessPath
-$vsDeveloperCommand = Get-OdsVsDeveloperCommand
-if (-not $vsDeveloperCommand) { throw 'Visual Studio C++ Build Tools não encontrado.' }
-Import-OdsVsDeveloperEnvironment $vsDeveloperCommand
+Import-OdsVisualStudioEnvironment
 
-foreach ($path in @(
-    (Join-Path $script:RepositoryRoot 'dist'),
-    (Join-Path $script:RepositoryRoot 'src-tauri\target')
-)) {
-    if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+if ($Clean) {
+    foreach ($path in @(
+        (Join-Path $script:RepositoryRoot 'dist'),
+        (Join-Path $script:RepositoryRoot 'src-tauri\target')
+    )) {
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+    }
 }
 
 Push-Location $script:RepositoryRoot

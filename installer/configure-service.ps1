@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param()
+param([switch]$UnitTest)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -7,6 +7,27 @@ Set-StrictMode -Version Latest
 $serviceName = 'OfflineDentalSystem'
 $serviceRegistryPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName"
 $sc = Join-Path $env:SystemRoot 'System32\sc.exe'
+
+function Get-OdsExpectedServiceImagePath {
+    param([Parameter(Mandatory)][string]$InstallDirectory)
+
+    $expectedExecutable = [IO.Path]::GetFullPath(
+        (Join-Path $InstallDirectory 'offline-dental-system.exe')
+    )
+    return '"' + $expectedExecutable + '" --service'
+}
+
+function Test-OdsServiceImagePath {
+    param(
+        [Parameter(Mandatory)][string]$ActualImagePath,
+        [Parameter(Mandatory)][string]$ExpectedExecutable
+    )
+
+    $expected = '"' + [IO.Path]::GetFullPath($ExpectedExecutable) + '" --service'
+    return $ActualImagePath.Trim().Equals($expected, [StringComparison]::OrdinalIgnoreCase)
+}
+
+if ($UnitTest) { return }
 
 if (-not (Test-Path -LiteralPath $sc -PathType Leaf)) {
     throw 'O Service Control Manager não está disponível.'
@@ -47,6 +68,11 @@ if ($service.StartName -ne 'NT AUTHORITY\LocalService') {
 if ($service.StartMode -ne 'Auto') {
     throw 'O serviço não está configurado para início automático.'
 }
-if ([string]$service.PathName -notmatch '(?i)"offline-dental-system\.exe"\s+--service\s*$') {
-    throw 'O ImagePath persistido do serviço não termina no executável esperado com --service.'
+$expectedExecutable = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'offline-dental-system.exe'))
+if (-not (Test-Path -LiteralPath $expectedExecutable -PathType Leaf)) {
+    throw 'O executável esperado do serviço não existe no diretório instalado.'
+}
+$actualImagePath = ([string]$service.PathName).Trim()
+if (-not (Test-OdsServiceImagePath -ActualImagePath $actualImagePath -ExpectedExecutable $expectedExecutable)) {
+    throw 'O ImagePath persistido do serviço diverge da configuração esperada.'
 }

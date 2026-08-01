@@ -175,6 +175,8 @@ jobs:
           if (-not $process.Start()) { throw 'Não foi possível iniciar o console host.' }
           $outputTask = $process.StandardOutput.ReadToEndAsync()
           $errorTask = $process.StandardError.ReadToEndAsync()
+          $response = $null
+          $payload = $null
           try {
             $deadline = [DateTime]::UtcNow.AddSeconds(45)
             do {

@@ -268,7 +268,7 @@ try {
         '-d', "ConfigureServiceScript=$configureServiceScript",
         '-d', "ConfigureHostTrustScript=$configureScript",
         '-d', "ApplicationIcon=$applicationIcon",
-        '-d', ("TestPackage=" + $(if ($TestInstallationPackage) { 'true' } else { 'false' })),
+        '-d', ("TestPackage=" + $(if ($TestInstallationPackage) { 'true' } else { '' })),
         '-o', $temporaryMsi
     )
 

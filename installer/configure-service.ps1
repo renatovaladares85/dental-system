@@ -36,3 +36,17 @@ if ([int]$configuration.Start -ne 2 -or
     [int]$configuration.ServiceSidType -ne 3) {
     throw 'A configuração restrita do serviço não foi aplicada integralmente.'
 }
+
+$service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction SilentlyContinue
+if ($null -eq $service) {
+    throw 'O serviço Offline Dental System não existe após a configuração.'
+}
+if ($service.StartName -ne 'NT AUTHORITY\LocalService') {
+    throw 'A conta persistida do serviço não é NT AUTHORITY\LocalService.'
+}
+if ($service.StartMode -ne 'Auto') {
+    throw 'O serviço não está configurado para início automático.'
+}
+if ([string]$service.PathName -notmatch '(?i)"offline-dental-system\.exe"\s+--service\s*$') {
+    throw 'O ImagePath persistido do serviço não termina no executável esperado com --service.'
+}

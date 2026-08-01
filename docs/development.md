@@ -30,6 +30,17 @@ O orquestrador executa, em ordem:
 8. inicia uma instância de desenvolvimento isolada em `.local-data\dev-host\Data`;
 9. valida corpo e headers de `GET /api/v1/health`; o navegador só abre com `-OpenBrowser`.
 
+O build é incremental por padrão. Para descartar somente `dist/` e
+`src-tauri/target/`, sem tocar em `.local-data`, use:
+
+```powershell
+pwsh -NoProfile -File .\scripts\dev\build.ps1 -Clean
+```
+
+O host de desenvolvimento permanece em foreground por padrão. Para liberá-lo
+após o health, use `-Detach`; acompanhe ou encerre somente o processo validado
+pelo PID file com `scripts/dev/status.ps1` e `scripts/dev/stop.ps1`.
+
 Ferramentas ausentes falham com instrução objetiva; a instalação delas é um bootstrap
 manual separado. O iniciador de desenvolvimento não instala serviço, não altera
 firewall e não confia em CA.
@@ -136,6 +147,16 @@ exige executável e MSI assinados, com timestamp válido, antes de produzir asse
 release. Scripts ZIP legados não são caminho suportado.
 
 ## Diagnóstico seguro
+
+Antes de qualquer tentativa de reparo, execute o diagnóstico sem escrita:
+
+```powershell
+& 'C:\Program Files\Offline Dental System\offline-dental-system.exe' --startup-diagnostics --json
+```
+
+O resultado é versionado e não cria banco, chave, TLS, host identity, migration,
+ACL ou regra de firewall. Ele informa apenas estados sanitizados de diretórios,
+lock, portas, identidade, banco, envelope de chave, TLS e logs.
 
 | Sintoma                       | Ação                                                             |
 | ----------------------------- | ---------------------------------------------------------------- |

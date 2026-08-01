@@ -42,9 +42,10 @@ Cada novo caso de uso autoritativo deve adicionar seu evento à mesma transaçã
 ## Diagnóstico de instalação
 
 1. Execute `scripts/diagnostics/inspect-installation.ps1`.
-2. Identifique o último evento `STARTUP_FAILED` e seu código sanitizado.
-3. Preserve banco, DPAPI, backups e logs antes de qualquer correção.
-4. Não envie o banco, arquivos `.odskey` ou `.odsbackup` como log de suporte.
+2. Execute `offline-dental-system.exe --startup-diagnostics --json` quando o binário estiver disponível; o modo é estritamente somente leitura.
+3. Identifique o último evento `STARTUP_FAILED` e seu código sanitizado.
+4. Preserve banco, DPAPI, backups e logs antes de qualquer correção.
+5. Não envie o banco, arquivos `.odskey` ou `.odsbackup` como log de suporte.
 
 O rollback do MSI remove somente componentes criados pela instalação atual.
 Dados já existentes em `%ProgramData%\OfflineDentalSystem` não são apagados automaticamente.

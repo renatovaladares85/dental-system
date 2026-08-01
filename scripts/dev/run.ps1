@@ -1,5 +1,8 @@
 [CmdletBinding()]
-param([switch]$OpenBrowser)
+param(
+    [switch]$OpenBrowser,
+    [switch]$Detach
+)
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
@@ -21,29 +24,50 @@ $executable = Join-Path $script:RepositoryRoot 'src-tauri\target\debug\offline-d
 if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) { throw 'Execute scripts/dev/build.ps1 antes de iniciar o host.' }
 
 New-Item -ItemType Directory -Force -Path $script:DevelopmentData, $script:LogDirectory | Out-Null
+if (Test-Path -LiteralPath $script:DevelopmentPidFile) {
+    $existing = Get-OdsDevelopmentHost
+    if ($existing.State -eq 'running') {
+        throw "O host de desenvolvimento já está em execução no PID $($existing.Process.ProcessId). Use scripts/dev/status.ps1 ou scripts/dev/stop.ps1."
+    }
+    if ($existing.State -eq 'divergent') {
+        throw 'O PID file aponta para um processo divergente; a execução foi recusada para preservar o processo.'
+    }
+    Remove-OdsDevelopmentPid
+}
 $stdout = Join-Path $script:LogDirectory 'web-host.stdout.log'
 $stderr = Join-Path $script:LogDirectory 'web-host.stderr.log'
-$hostProcess = Start-OdsNative `
+$hostProcess = Start-OdsDevelopmentHost `
     -FilePath $executable `
     -Arguments @('--console', '--data-directory', $script:DevelopmentData) `
     -StandardOutputPath $stdout `
     -StandardErrorPath $stderr
+Write-OdsDevelopmentPid -Process $hostProcess -Executable $executable -Arguments @('--console', '--data-directory', $script:DevelopmentData)
 $deadline = [DateTime]::UtcNow.AddSeconds(45)
-while ([DateTime]::UtcNow -lt $deadline -and -not $hostProcess.Process.HasExited) {
+while ([DateTime]::UtcNow -lt $deadline -and -not $hostProcess.HasExited) {
     if (Test-OdsHealth) {
         Write-Host "SUCESSO: sistema disponível em $script:ApplicationUrl" -ForegroundColor Green
         if ($OpenBrowser) { Start-Process $script:ApplicationUrl }
-        exit 0
+        if ($Detach) {
+            $hostProcess.Dispose()
+            return
+        }
+        try {
+            $hostProcess.WaitForExit()
+        } finally {
+            if (-not $hostProcess.HasExited) {
+                [void]$hostProcess.WaitForExit(10000)
+            }
+            if ($hostProcess.HasExited) { Remove-OdsDevelopmentPid }
+            $hostProcess.Dispose()
+        }
+        return
     }
     Start-Sleep -Milliseconds 500
 }
-if (-not $hostProcess.Process.HasExited) {
-    Stop-Process -Id $hostProcess.Process.Id -ErrorAction SilentlyContinue
-    $hostProcess.Process.WaitForExit()
+if (-not $hostProcess.HasExited) {
+    Stop-Process -Id $hostProcess.Id -ErrorAction SilentlyContinue
+    $hostProcess.WaitForExit()
 }
-$hostProcess.StdOutCopy.GetAwaiter().GetResult()
-$hostProcess.StdErrCopy.GetAwaiter().GetResult()
-$hostProcess.StdOutStream.Dispose()
-$hostProcess.StdErrStream.Dispose()
-$hostProcess.Process.Dispose()
+if ($hostProcess.HasExited) { Remove-OdsDevelopmentPid }
+$hostProcess.Dispose()
 throw "O host não respondeu ao health. Logs preservados: '$stdout' e '$stderr'."

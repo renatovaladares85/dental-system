@@ -4,6 +4,7 @@ $script:RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'
 $script:CargoManifest = Join-Path $script:RepositoryRoot 'src-tauri\Cargo.toml'
 $script:DevelopmentRoot = Join-Path $script:RepositoryRoot '.local-data\dev-host'
 $script:DevelopmentData = Join-Path $script:DevelopmentRoot 'Data'
+$script:DevelopmentPidFile = Join-Path $script:DevelopmentRoot 'server.pid'
 $script:LogDirectory = Join-Path $script:RepositoryRoot '.local-data\logs'
 $script:HealthUrl = 'http://127.0.0.1:8742/api/v1/health'
 $script:ApplicationUrl = 'http://127.0.0.1:8742'
@@ -133,7 +134,18 @@ function Invoke-OdsNpm {
     Invoke-OdsNative 'node.exe' $npmCli @Arguments
 }
 
-function Start-OdsNative {
+function ConvertTo-OdsWindowsCommandLine([string[]]$Arguments) {
+    return ($Arguments | ForEach-Object {
+        $value = [string]$_
+        if ($value.Length -eq 0) { return '""' }
+        if ($value -notmatch '[\s"]') { return $value }
+        $escaped = [regex]::Replace($value, '(\\*)"', '$1$1\\"')
+        $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
+        return '"' + $escaped + '"'
+    }) -join ' '
+}
+
+function Start-OdsDevelopmentHost {
     param(
         [Parameter(Mandatory)][string]$FilePath,
         [Parameter(Mandatory)][string[]]$Arguments,
@@ -141,29 +153,57 @@ function Start-OdsNative {
         [Parameter(Mandatory)][string]$StandardErrorPath
     )
 
-    $startInfo = [Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = $FilePath
-    $startInfo.WorkingDirectory = $script:RepositoryRoot
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-    foreach ($argument in $Arguments) {
-        [void]$startInfo.ArgumentList.Add($argument)
+    $process = Start-Process -FilePath $FilePath `
+        -ArgumentList (ConvertTo-OdsWindowsCommandLine $Arguments) `
+        -WorkingDirectory $script:RepositoryRoot `
+        -RedirectStandardOutput $StandardOutputPath `
+        -RedirectStandardError $StandardErrorPath `
+        -NoNewWindow `
+        -PassThru
+    if ($null -eq $process) { throw "Não foi possível iniciar '$FilePath'." }
+    return $process
+}
+
+function Write-OdsDevelopmentPid([Diagnostics.Process]$Process, [string]$Executable, [string[]]$Arguments) {
+    [pscustomobject]@{
+        pid = $Process.Id
+        executable = [IO.Path]::GetFullPath($Executable)
+        arguments = $Arguments
+        dataDirectory = [IO.Path]::GetFullPath($script:DevelopmentData)
+        startedAtUtc = [DateTime]::UtcNow.ToString('O')
+    } | ConvertTo-Json -Compress | Set-Content -LiteralPath $script:DevelopmentPidFile -Encoding utf8 -NoNewline
+}
+
+function Remove-OdsDevelopmentPid {
+    if (Test-Path -LiteralPath $script:DevelopmentPidFile -PathType Leaf) {
+        Remove-Item -LiteralPath $script:DevelopmentPidFile -Force
+    }
+}
+
+function Get-OdsDevelopmentHost {
+    if (-not (Test-Path -LiteralPath $script:DevelopmentPidFile -PathType Leaf)) { return $null }
+    try {
+        $metadata = Get-Content -LiteralPath $script:DevelopmentPidFile -Raw | ConvertFrom-Json
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId=$([int]$metadata.pid)" -ErrorAction SilentlyContinue
+    } catch {
+        return [pscustomobject]@{ State = 'invalid-pid-file'; Metadata = $null; Process = $null }
+    }
+    if ($null -eq $process) {
+        return [pscustomobject]@{ State = 'not-running'; Metadata = $metadata; Process = $null }
     }
 
-    $process = [Diagnostics.Process]::new()
-    $process.StartInfo = $startInfo
-    if (-not $process.Start()) { throw "Não foi possível iniciar '$FilePath'." }
-    $stdoutStream = [IO.File]::Open($StandardOutputPath, 'Create', 'Write', 'Read')
-    $stderrStream = [IO.File]::Open($StandardErrorPath, 'Create', 'Write', 'Read')
-    return [pscustomobject]@{
-        Process = $process
-        StdOutCopy = $process.StandardOutput.BaseStream.CopyToAsync($stdoutStream)
-        StdErrCopy = $process.StandardError.BaseStream.CopyToAsync($stderrStream)
-        StdOutStream = $stdoutStream
-        StdErrStream = $stderrStream
+    $expectedExecutable = [IO.Path]::GetFullPath([string]$metadata.executable)
+    $expectedData = [IO.Path]::GetFullPath([string]$metadata.dataDirectory)
+    $commandLine = [string]$process.CommandLine
+    $matchesExpectedHost = $process.ExecutablePath -and
+        [IO.Path]::GetFullPath([string]$process.ExecutablePath).Equals($expectedExecutable, [StringComparison]::OrdinalIgnoreCase) -and
+        $commandLine -match '(?i)(?:^|\s)--console(?:\s|$)' -and
+        $commandLine -match '(?i)(?:^|\s)--data-directory(?:\s|$)' -and
+        $commandLine.Contains($expectedData, [StringComparison]::OrdinalIgnoreCase)
+    if (-not $matchesExpectedHost) {
+        return [pscustomobject]@{ State = 'divergent'; Metadata = $metadata; Process = $process }
     }
+    return [pscustomobject]@{ State = 'running'; Metadata = $metadata; Process = $process }
 }
 
 function Test-OdsHealth {

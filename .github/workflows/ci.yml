@@ -121,10 +121,6 @@ jobs:
             throw 'PSScriptAnalyzer encontrou problemas nos scripts Windows.'
           }
 
-      - name: Testar ciclo do serviço Windows
-        shell: powershell
-        run: .\scripts\tests\windows-service.tests.ps1
-
       - name: Instalar toolchain fixada
         shell: pwsh
         run: |
@@ -153,6 +149,14 @@ jobs:
             throw 'src-tauri/Cargo.lock deve ser versionado para builds determinísticos.'
           }
 
+      - name: Testar ciclo do serviço Windows
+        shell: pwsh
+        run: .\scripts\tests\windows-service.tests.ps1
+
+      - name: Testar configuração do instalador do serviço
+        shell: pwsh
+        run: .\scripts\tests\configure-service.tests.ps1
+
       - name: Verificar formatação Rust
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 
@@ -164,6 +168,15 @@ jobs:
 
       - name: Compilar servidor Rust com a SPA incorporada
         run: cargo build --manifest-path src-tauri/Cargo.toml --locked --all-features
+
+      - name: Validar startup diagnostics
+        shell: pwsh
+        run: |
+          $executable = Resolve-Path '.\src-tauri\target\debug\offline-dental-system.exe'
+          $diagnostics = & $executable --startup-diagnostics --json
+          if ($LASTEXITCODE -ne 0) { throw 'Startup diagnostics falhou.' }
+          $parsed = $diagnostics | ConvertFrom-Json
+          if ($parsed.formatVersion -ne 1) { throw 'Formato inesperado do startup diagnostics.' }
 
       - name: Console smoke
         shell: pwsh
@@ -215,10 +228,21 @@ jobs:
       - name: Validar MSI sem publicar
         shell: pwsh
         run: |
+          $before = git status --short
           cargo build --manifest-path src-tauri/Cargo.toml --locked --all-features --release
+          $executable = Resolve-Path '.\src-tauri\target\release\offline-dental-system.exe'
+          $securityDiagnostics = & $executable --security-diagnostics --json
+          if ($LASTEXITCODE -ne 0 -or -not $securityDiagnostics) { throw 'Security diagnostics falhou.' }
+          $startupDiagnostics = & $executable --startup-diagnostics --json
+          if ($LASTEXITCODE -ne 0 -or -not $startupDiagnostics) { throw 'Startup diagnostics falhou.' }
           dotnet tool install --global wix --version 4.0.6
           $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
           .\installer\build-msi.ps1 -ValidationOnly
+          $leftovers = @(Get-ChildItem -Path . -Recurse -File -Include *.msi,*.partial -ErrorAction SilentlyContinue)
+          if ($leftovers.Count -gt 0) { throw 'ValidationOnly deixou artefatos de instalador no workspace.' }
+          if (Test-Path -LiteralPath '.\artifacts\installer') { throw 'ValidationOnly criou diretório de distribuição.' }
+          $after = git status --short
+          if ($before -ne $after) { throw 'ValidationOnly alterou o working tree.' }
 
       - name: Instalar ferramentas de auditoria fixadas
         run: |

@@ -6,6 +6,7 @@ import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
 import { Card } from '../../components/ui/Card';
 import { toApiError } from '../../lib/api';
+import { AuditPanel } from '../audit/AuditPanel';
 import type { AuthService, AuthenticatedSession } from './types';
 
 function formatExpiration(value: string): string {
@@ -126,6 +127,7 @@ export function AuthenticatedScreen({
             </p>
           </Card>
         </div>
+        {session.user.roles.includes('MASTER_ADMIN') ? <AuditPanel /> : null}
       </div>
     </main>
   );

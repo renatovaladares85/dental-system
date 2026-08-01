@@ -79,6 +79,7 @@
     <StandardDirectory Id="ProgramMenuFolder">
       <Directory Id="PROGRAMMENUDIR" Name="Offline Dental System" />
     </StandardDirectory>
+    <StandardDirectory Id="DesktopFolder" />
   </Fragment>
 
   <Fragment>
@@ -153,6 +154,9 @@
         <File Id="LaunchAfterInstallScript"
               Source="$(var.LaunchAfterInstallScript)"
               Name="launch-after-install.ps1" />
+        <File Id="ApplicationIcon"
+              Source="$(var.ApplicationIcon)"
+              Name="offline-dental-system.ico" />
       </Component>
 
       <Component Id="ProductLicense" Guid="774F598A-240C-44BD-B5C8-278BC4BABCE5" Bitness="always64">
@@ -196,7 +200,14 @@
                                Type="link"
                                Name="Offline Dental System"
                                Directory="PROGRAMMENUDIR"
-                               Target="http://127.0.0.1:8742" />
+                               Target="http://127.0.0.1:8742"
+                               IconFile="[#ApplicationIcon]" />
+        <util:InternetShortcut Id="OpenDentalSystemDesktopShortcut"
+                               Type="link"
+                               Name="Offline Dental System"
+                               Directory="DesktopFolder"
+                               Target="http://127.0.0.1:8742"
+                               IconFile="[#ApplicationIcon]" />
         <RemoveFolder Id="RemoveProgramMenuDirectory"
                       Directory="PROGRAMMENUDIR"
                       On="uninstall" />

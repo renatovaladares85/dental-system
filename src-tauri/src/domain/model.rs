@@ -203,6 +203,8 @@ pub struct NewSessionRecord {
     pub created_at: String,
     pub idle_expires_at: String,
     pub absolute_expires_at: String,
+    pub correlation_id: Option<String>,
+    pub source: String,
 }
 
 #[derive(Clone)]
@@ -212,4 +214,21 @@ pub struct SessionRecord {
     pub csrf_hash: [u8; 32],
     pub idle_expires_at: String,
     pub absolute_expires_at: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditEvent {
+    pub id: String,
+    pub actor_type: String,
+    pub actor_user_id: Option<String>,
+    pub actor_username: Option<String>,
+    pub action: String,
+    pub entity_type: String,
+    pub entity_id: Option<String>,
+    pub result: String,
+    pub correlation_id: Option<String>,
+    pub session_id: Option<String>,
+    pub source: String,
+    pub occurred_at: String,
 }

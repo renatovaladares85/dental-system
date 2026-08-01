@@ -85,10 +85,10 @@ async fn run_with_paths(
     data_directory: PathBuf,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    init_tracing();
+    std::fs::create_dir_all(&data_directory)?;
+    init_tracing(&product_root)?;
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    std::fs::create_dir_all(&data_directory)?;
     let _instance = InstanceGuard::acquire(&product_root)?;
     let host = HostIdentityManager::load_or_create(&product_root)?;
     let installation_id = Uuid::parse_str(&host.installation_id)?;
@@ -424,20 +424,35 @@ fn validate_console_data_directory(
     Ok((product_root, data_directory))
 }
 
-fn init_tracing() {
+fn init_tracing(product_root: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use tracing_subscriber::fmt::writer::MakeWriterExt as _;
+
     static PANIC_HOOK: Once = Once::new();
+    let log_directory = product_root.join("Logs");
+    std::fs::create_dir_all(&log_directory)?;
+    let file_appender = tracing_appender::rolling::RollingFileAppender::builder()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix("server")
+        .filename_suffix("jsonl")
+        .max_log_files(30)
+        .build(log_directory)?;
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,tower_http=warn"));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
+        .json()
+        .flatten_event(true)
+        .with_ansi(false)
         .with_target(false)
-        .compact()
+        .with_writer(std::io::stderr.and(file_appender))
         .try_init();
     PANIC_HOOK.call_once(|| {
         std::panic::set_hook(Box::new(|_| {
             tracing::error!(code = "UNHANDLED_PANIC", "an internal task panicked");
         }));
     });
+    tracing::info!(event = "SERVER_LOGGING_READY", retention_files = 30);
+    Ok(())
 }
 
 #[cfg(test)]

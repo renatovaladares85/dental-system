@@ -15,7 +15,8 @@ use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::domain::{
-    AppError, AppResult, AuthSession, LoginInput, LoginUserRecord, NewSessionRecord, SessionRecord,
+    AppError, AppResult, AuditEvent, AuthSession, LoginInput, LoginUserRecord, NewSessionRecord,
+    SessionRecord,
 };
 
 const IDLE_MINUTES: i64 = 30;
@@ -44,6 +45,7 @@ pub trait SessionStore: Send + Sync {
         now: &str,
         idle_expires_at: &str,
     ) -> AppResult<()>;
+    #[allow(clippy::too_many_arguments)]
     fn rotate_session(
         &self,
         session_id: &str,
@@ -52,6 +54,8 @@ pub trait SessionStore: Send + Sync {
         new_csrf_hash: &[u8; 32],
         now: &str,
         idle_expires_at: &str,
+        correlation_id: Option<&str>,
+        source: &str,
     ) -> AppResult<()>;
     fn revoke_session(
         &self,
@@ -59,7 +63,16 @@ pub trait SessionStore: Send + Sync {
         token_hash: &[u8; 32],
         user_id: &str,
         now: &str,
+        correlation_id: Option<&str>,
+        source: &str,
     ) -> AppResult<()>;
+    fn list_audit_events(
+        &self,
+        user_id: &str,
+        session_id: &str,
+        correlation_id: &str,
+        limit: u32,
+    ) -> AppResult<Vec<AuditEvent>>;
 }
 
 pub struct AuthenticationService {
@@ -89,7 +102,16 @@ impl AuthenticationService {
         Self { store }
     }
 
-    pub fn login(&self, mut input: LoginInput) -> AppResult<IssuedSession> {
+    pub fn login(&self, input: LoginInput) -> AppResult<IssuedSession> {
+        self.login_with_context(input, None, "APPLICATION")
+    }
+
+    pub fn login_with_context(
+        &self,
+        mut input: LoginInput,
+        correlation_id: Option<&str>,
+        source: &str,
+    ) -> AppResult<IssuedSession> {
         let mut raw_username = Zeroizing::new(std::mem::take(&mut input.username));
         let mut raw_password = Zeroizing::new(std::mem::take(&mut input.password));
         if raw_username.len() > 64 || raw_password.len() > 1024 {
@@ -131,6 +153,8 @@ impl AuthenticationService {
             created_at: timestamp(now),
             idle_expires_at: timestamp(idle_expires_at),
             absolute_expires_at: timestamp(absolute_expires_at),
+            correlation_id: correlation_id.map(str::to_owned),
+            source: source.to_owned(),
         };
         self.store.create_session(&session)?;
 
@@ -174,16 +198,38 @@ impl AuthenticationService {
     }
 
     pub fn logout(&self, session_token: &str, csrf_token: &str) -> AppResult<()> {
+        self.logout_with_context(session_token, csrf_token, None, "APPLICATION")
+    }
+
+    pub fn logout_with_context(
+        &self,
+        session_token: &str,
+        csrf_token: &str,
+        correlation_id: Option<&str>,
+        source: &str,
+    ) -> AppResult<()> {
         let context = self.authenticate_with_csrf(session_token, csrf_token)?;
         self.store.revoke_session(
             &context.record.id,
             &context.token_hash,
             &context.record.user.id,
             &timestamp(Utc::now()),
+            correlation_id,
+            source,
         )
     }
 
     pub fn rotate(&self, session_token: &str, csrf_token: &str) -> AppResult<IssuedSession> {
+        self.rotate_with_context(session_token, csrf_token, None, "APPLICATION")
+    }
+
+    pub fn rotate_with_context(
+        &self,
+        session_token: &str,
+        csrf_token: &str,
+        correlation_id: Option<&str>,
+        source: &str,
+    ) -> AppResult<IssuedSession> {
         let context = self.authenticate_with_csrf(session_token, csrf_token)?;
         let new_session_token = random_token();
         let new_csrf_token = csrf_for_session(&new_session_token)?;
@@ -196,6 +242,8 @@ impl AuthenticationService {
             &hash_token(&new_csrf_token),
             &timestamp(now),
             &idle_expires_at,
+            correlation_id,
+            source,
         )?;
         Ok(IssuedSession {
             public: authenticated_response(
@@ -206,6 +254,33 @@ impl AuthenticationService {
             session_token: new_session_token,
             csrf_token: new_csrf_token,
         })
+    }
+
+    pub fn audit_events(
+        &self,
+        session_token: &str,
+        correlation_id: &str,
+        limit: u32,
+    ) -> AppResult<Vec<AuditEvent>> {
+        let context = self.authenticate(session_token)?;
+        if !context
+            .record
+            .user
+            .roles
+            .iter()
+            .any(|role| role == "MASTER_ADMIN")
+        {
+            return Err(AppError::forbidden(
+                "AUDIT_ACCESS_DENIED",
+                "O usuário não possui permissão para consultar a auditoria.",
+            ));
+        }
+        self.store.list_audit_events(
+            &context.record.user.id,
+            &context.record.id,
+            correlation_id,
+            limit,
+        )
     }
 
     fn authenticate(&self, session_token: &str) -> AppResult<SessionContext> {
@@ -452,6 +527,8 @@ mod tests {
             new_csrf_hash: &[u8; 32],
             _now: &str,
             idle_expires_at: &str,
+            _correlation_id: Option<&str>,
+            _source: &str,
         ) -> AppResult<()> {
             let mut state = self.state.lock().map_err(|_| AppError::worker())?;
             let session = state
@@ -476,6 +553,8 @@ mod tests {
             token_hash: &[u8; 32],
             _user_id: &str,
             _now: &str,
+            _correlation_id: Option<&str>,
+            _source: &str,
         ) -> AppResult<()> {
             let mut state = self.state.lock().map_err(|_| AppError::worker())?;
             let session = state
@@ -487,6 +566,16 @@ mod tests {
             }
             session.revoked = true;
             Ok(())
+        }
+
+        fn list_audit_events(
+            &self,
+            _user_id: &str,
+            _session_id: &str,
+            _correlation_id: &str,
+            _limit: u32,
+        ) -> AppResult<Vec<AuditEvent>> {
+            Ok(Vec::new())
         }
     }
 

@@ -1,12 +1,12 @@
-# Checklist do instalador Windows
+# Checklist da instalação local no Windows
 
-Este checklist é obrigatório antes de considerar um MSI utilizável. Execute em
+Este checklist é obrigatório antes de considerar o pacote portátil utilizável. Execute em
 uma máquina virtual Windows 11 x64 limpa, nos perfis de rede `Private` e
 `Domain`, sem Node.js, Rust, Docker ou sessão de desenvolvimento.
 
 ## Gate antes da instalação
 
-- O executável e o MSI possuem assinatura Authenticode válida e timestamp.
+- O executável possui assinatura Authenticode válida e timestamp; o bootstrapper fixa o mesmo publisher.
 - `--security-diagnostics --json` informa SQLCipher `>= 4.17.0` e
   `distributionReady: true`.
 - A licença de produto definitiva foi incorporada; o marcador
@@ -16,6 +16,12 @@ uma máquina virtual Windows 11 x64 limpa, nos perfis de rede `Private` e
 
 - O serviço `OfflineDentalSystem` executa como `NT AUTHORITY\LocalService`,
   inicia automaticamente com atraso e possui SID do tipo `RESTRICTED`.
+- `Get-CimInstance Win32_Service -Filter "Name='OfflineDentalSystem'"` apresenta
+  `PathName` exatamente como `"<executável controlado>" --service` e
+  `StartName` como `NT AUTHORITY\LocalService`. `sc.exe qc` e
+  `sc.exe qsidtype` devem confirmar os mesmos valores.
+- Em `HKLM\SYSTEM\CurrentControlSet\Services\OfflineDentalSystem`, `Start = 2`,
+  `DelayedAutoStart = 1` e `ServiceSidType = 3`.
 - O SID retornado por `sc.exe showsid OfflineDentalSystem` é
   `S-1-5-80-3281840523-3983707945-848950836-1812796060-3499222651`.
 - `%ProgramData%\OfflineDentalSystem` possui DACL protegida somente para
@@ -40,6 +46,16 @@ uma máquina virtual Windows 11 x64 limpa, nos perfis de rede `Private` e
 
 ## Operação e clientes
 
+- Com o sistema ausente, `Instalar-e-Iniciar.bat` valida o ZIP, solicita UAC uma vez, instala, espera o health e abre o navegador.
+- Com o sistema saudável, uma nova execução do BAT ou do atalho abre o navegador sem reinstalar.
+- Com o serviço parado, `Abrir-Sistema.bat` solicita UAC, inicia o serviço e abre o navegador.
+- ZIP ausente, duplicado, adulterado, truncado ou com binário assinado por outro certificado é rejeitado com mensagem legível.
+- Cancelar o UAC não inicia instalação parcial nem remove dados existentes.
+- Uma falha em `sc.exe create` não executa `stop`/`delete`; uma reexecução
+  atualiza apenas um serviço cujo executável anterior pertença ao diretório
+  controlado do produto. Serviço homônimo conflitante é recusado sem alteração.
+- Os atalhos “Offline Dental System” existem na Área de Trabalho e no menu Iniciar, usam o ícone local e abrem somente `http://127.0.0.1:8742`.
+- A desinstalação padrão preserva `%ProgramData%\OfflineDentalSystem`; a remoção total exige digitar `REMOVER`.
 - O atalho e a abertura pós-health-check funcionam sem terminal e sem
   dependências de desenvolvimento.
 - Edge e Chrome no Windows/Android e Safari no iOS concluem confiança da CA,
@@ -47,4 +63,3 @@ uma máquina virtual Windows 11 x64 limpa, nos perfis de rede `Private` e
 - O firewall volta a bloquear o tráfego ao trocar a rede para `Public`.
 - O Service Worker não armazena `/api`, dados clínicos, cookies ou CSRF em
   Cache Storage/IndexedDB e apresenta apenas o shell quando o servidor cai.
-

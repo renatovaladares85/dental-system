@@ -79,6 +79,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Validar scripts PowerShell do Windows
+        shell: pwsh
+        run: |
+          $errors = @()
+          Get-ChildItem -Path scripts, installer -Recurse -File |
+            Where-Object { $_.Extension -in '.ps1', '.psm1' } |
+            ForEach-Object {
+            $tokens = $null
+            $parseErrors = $null
+            [Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName,
+              [ref]$tokens,
+              [ref]$parseErrors
+            ) | Out-Null
+            $errors += @($parseErrors)
+          }
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            throw 'Há scripts PowerShell com erros de sintaxe.'
+          }
+
+      - name: Testar ciclo do serviço Windows
+        shell: powershell
+        run: .\scripts\tests\windows-service.tests.ps1
+
       - name: Instalar toolchain fixada
         shell: pwsh
         run: |
@@ -119,6 +144,30 @@ jobs:
       - name: Compilar servidor Rust com a SPA incorporada
         run: cargo build --manifest-path src-tauri/Cargo.toml --locked --all-features
 
+      - name: Validar pacote portátil e bootstrapper
+        shell: pwsh
+        run: |
+          $output = Join-Path $env:RUNNER_TEMP 'ods-portable-validation'
+          .\scripts\build-portable-package.ps1 `
+            -Development `
+            -ServerExecutable .\src-tauri\target\debug\offline-dental-system.exe `
+            -OutputDirectory $output
+          $package = Get-ChildItem -LiteralPath $output -Filter 'OfflineDentalSystem-*-windows-x64.zip' -File -Recurse
+          if (@($package).Count -ne 1) { throw 'O build portátil não produziu exatamente um ZIP.' }
+          .\scripts\install-local.ps1 `
+            -PackagePath $package.FullName `
+            -AllowDevelopmentPackage `
+            -ValidatePackageOnly `
+            -LogPath (Join-Path $env:LOCALAPPDATA 'OfflineDentalSystem\Logs\ci-install.jsonl')
+          $installLog = Join-Path $env:LOCALAPPDATA 'OfflineDentalSystem\Logs\ci-install.jsonl'
+          $installEvents = Get-Content -Encoding UTF8 $installLog | ForEach-Object { $_ | ConvertFrom-Json }
+          if ('PACKAGE_VALIDATION_COMPLETED' -notin @($installEvents.event)) {
+            throw 'O log estruturado não registrou a validação do pacote.'
+          }
+          $uninstallLog = Join-Path $env:LOCALAPPDATA 'OfflineDentalSystem\Logs\ci-uninstall.jsonl'
+          .\scripts\uninstall-local.ps1 -PlanOnly -LogPath $uninstallLog | ConvertFrom-Json | Out-Null
+          Get-Content -Encoding UTF8 $uninstallLog | ForEach-Object { $_ | ConvertFrom-Json } | Out-Null
+
       - name: Instalar ferramentas de auditoria fixadas
         run: |
           cargo install cargo-audit --locked --version 0.22.2
@@ -144,5 +193,5 @@ jobs:
           }
           $licenses | Sort-Object name | Format-Table name, version, license, license_file
 
-# Este workflow valida código-fonte e o binário de desenvolvimento. Ele não cria MSI,
-# não assina, não publica e não cria release.
+# Este workflow valida código-fonte, binário e pacote portátil de desenvolvimento.
+# Ele não assina, não publica e não cria release.

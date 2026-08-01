@@ -2,7 +2,7 @@
 
 ## Convenções
 
-O modelo abaixo é o contrato lógico do MVP. As migrations `0001_foundation.sql` e `0002_web_identity_sessions.sql` contêm somente a fundação e a sessão web implementadas nesta entrega; tabelas futuras não devem ser tratadas como disponíveis até receberem migration e repository próprios.
+O modelo abaixo é o contrato lógico do MVP. As migrations `0001_foundation.sql`, `0002_web_identity_sessions.sql` e `0003_operational_audit.sql` contêm somente a fundação, a sessão web e o contexto de auditoria implementados nesta entrega; tabelas futuras não devem ser tratadas como disponíveis até receberem migration e repository próprios.
 
 - SQLite com SQLCipher e `PRAGMA foreign_keys = ON` por conexão.
 - IDs UUIDv7 gerados na camada Rust e persistidos como `TEXT`.
@@ -35,7 +35,7 @@ erDiagram
   USERS ||--o{ AUDIT_EVENTS : executa
 ```
 
-## Fundação implementada — schema 2
+## Fundação implementada — schema 3
 
 | Tabela                     | Finalidade atual                                                                               |
 | -------------------------- | ---------------------------------------------------------------------------------------------- |
@@ -48,10 +48,10 @@ erDiagram
 | `installation_settings`    | diretórios distintos e IDs do par recovery/backup vigente; atualização transacional e auditada |
 | `recovery_package_history` | referência/hash/verificação do `.odskey`, sem código                                           |
 | `backup_history`           | referência/hashes/verificação do `.odsbackup`                                                  |
-| `audit_events`             | eventos do setup com triggers contra update/delete                                             |
+| `audit_events`             | ações autoritativas com ator, sessão, resultado, origem, correlação e proteção append-only     |
 | `sessions`                 | sessão do master, hashes de token/CSRF, limites de tempo, rotação e revogação                  |
 
-As migrations usam tabelas `STRICT`, constraints, índices e `PRAGMA user_version = 2`. A migration 0002 é forward-only e atualiza a versão da instalação dentro da própria transação; na criação limpa ela é aplicada logo após o registro inicial. Elas não implementam `permissions`, `role_permissions`, patients, agenda, prontuário ou odontograma.
+As migrations usam tabelas `STRICT`, constraints, índices e `PRAGMA user_version = 3`. As migrations 0002 e 0003 são forward-only e atualizam a versão da instalação dentro da própria transação; na criação limpa são aplicadas logo após o registro inicial. A 0003 adiciona resultado, correlação, sessão e origem à auditoria sem enfraquecer os triggers contra alteração e exclusão. Elas não implementam `permissions`, `role_permissions`, patients, agenda, prontuário ou odontograma.
 
 As seções seguintes descrevem o modelo alvo do MVP. Salvo as tabelas listadas acima, são planejamento e não schema executável desta entrega.
 

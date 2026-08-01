@@ -53,7 +53,7 @@ Fronteiras de confiança:
 
 `K_db` e chaves privadas TLS são protegidas com `CryptProtectData`, `CRYPTPROTECT_UI_FORBIDDEN`, escopo `CurrentUser` e entropia contextual. `LOCAL_MACHINE` é proibido. O Windows Service usa `LocalService` com perfil carregado e HKCU próprio.
 
-Isso vincula o envelope local à conta/máquina. O `.odskey` continua obrigatório para recuperação portátil. Antes do MSI ser aceito, testes devem provar que o serviço consegue proteger e reabrir as chaves após reboot sem sessão interativa e que outro usuário não consegue fazê-lo.
+Isso vincula o envelope local à conta/máquina. O `.odskey` continua obrigatório para recuperação portátil. Antes do pacote portátil ser aceito, testes devem provar que o serviço consegue proteger e reabrir as chaves após reboot sem sessão interativa e que outro usuário não consegue fazê-lo.
 
 ## Senhas
 
@@ -124,7 +124,7 @@ Erros HTTP não revelam causa interna. Autenticação inválida sempre usa a mes
 - [ ] Cache Storage, IndexedDB e Service Worker provam ausência de `/api/` e dados clínicos.
 - [ ] Teste de 20 clientes e reinício durante sessões/escritas não corrompe estado.
 - [ ] Restore completo e rollback exercitados em outra máquina.
-- [ ] MSI assinado, firewall restrito, upgrade/repair/uninstall preservando dados.
+- [ ] Pacote portátil com binário assinado, firewall restrito e instalação/desinstalação preservando dados.
 - [ ] Licença do produto, SBOM/atribuições e revisão LGPD definidas.
 - [ ] Nenhum segredo em logs, respostas, bundle, dumps de teste ou snapshots.
 

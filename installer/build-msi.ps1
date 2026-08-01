@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [switch]$ValidationOnly,
     [string]$ServerExecutable,
@@ -19,6 +19,10 @@ $packageSource = Join-Path $installerRoot 'Package.wxs'
 $configureServiceScript = Join-Path $installerRoot 'configure-service.ps1'
 $configureScript = Join-Path $installerRoot 'configure-host-trust.ps1'
 $launchScript = Join-Path $installerRoot 'launch-after-install.ps1'
+$launcherBatch = Join-Path $installerRoot 'Instalar-ou-Abrir.bat'
+$launcherScriptTemplate = Join-Path $installerRoot 'Instalar-ou-Abrir.ps1'
+$launcherThumbprintToken = '__ODS_SIGNING_CERT_THUMBPRINT__'
+$applicationIcon = Join-Path $repositoryRoot 'src-tauri\icons\icon.ico'
 $minimumSqlCipher = [version]'4.17.0'
 $wixVersion = '4.0.6'
 
@@ -32,6 +36,29 @@ if (-not $ServerExecutable) {
 $ServerExecutable = [IO.Path]::GetFullPath($ServerExecutable)
 if (-not (Test-Path -LiteralPath $ServerExecutable -PathType Leaf)) {
     throw "Executável release ausente em '$ServerExecutable'."
+}
+foreach ($requiredFile in @(
+    $packageSource,
+    $configureServiceScript,
+    $configureScript,
+    $launchScript,
+    $launcherBatch,
+    $launcherScriptTemplate,
+    $applicationIcon
+)) {
+    if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
+        throw "Arquivo obrigatório do instalador ausente: '$requiredFile'."
+    }
+}
+$launcherTokens = $null
+$launcherParseErrors = $null
+[Management.Automation.Language.Parser]::ParseFile(
+    $launcherScriptTemplate,
+    [ref]$launcherTokens,
+    [ref]$launcherParseErrors
+) | Out-Null
+if ($launcherParseErrors.Count -gt 0) {
+    throw 'O script do launcher contém erro de sintaxe e não pode integrar a distribuição.'
 }
 
 $cargoManifest = Get-Content -Raw (Join-Path $repositoryRoot 'src-tauri\Cargo.toml')
@@ -201,6 +228,7 @@ try {
         '-d' "ConfigureServiceScript=$configureServiceScript" `
         '-d' "ConfigureHostTrustScript=$configureScript" `
         '-d' "LaunchAfterInstallScript=$launchScript" `
+        '-d' "ApplicationIcon=$applicationIcon" `
         '-o' $temporaryMsi
     if ($LASTEXITCODE -ne 0) { throw 'Compilação WiX falhou.' }
 
@@ -213,16 +241,54 @@ try {
     }
 
     Sign-And-Verify $temporaryMsi
+    $launcherTemplate = Get-Content -Raw -LiteralPath $launcherScriptTemplate
+    if ([regex]::Matches($launcherTemplate, [regex]::Escape($launcherThumbprintToken)).Count -ne 1) {
+        throw 'O template do launcher não contém exatamente um marcador de assinatura.'
+    }
+    $renderedLauncher = $launcherTemplate.Replace($launcherThumbprintToken, $expectedThumbprint)
+    $temporaryLauncher = Join-Path $temporaryDirectory 'Instalar-ou-Abrir.ps1'
+    [IO.File]::WriteAllText(
+        $temporaryLauncher,
+        $renderedLauncher,
+        [Text.UTF8Encoding]::new($true)
+    )
+    $renderedTokens = $null
+    $renderedParseErrors = $null
+    [Management.Automation.Language.Parser]::ParseFile(
+        $temporaryLauncher,
+        [ref]$renderedTokens,
+        [ref]$renderedParseErrors
+    ) | Out-Null
+    if ($renderedParseErrors.Count -gt 0) {
+        throw 'O launcher gerado contém erro de sintaxe.'
+    }
+
     if (-not $OutputDirectory) {
         $OutputDirectory = Join-Path $repositoryRoot 'artifacts\installer'
     }
-    New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
-    $output = Join-Path ([IO.Path]::GetFullPath($OutputDirectory)) (Split-Path -Leaf $temporaryMsi)
+    $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
+    New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
+    $packageName = "OfflineDentalSystem-$productVersion-x64"
+    $output = Join-Path $outputRoot $packageName
     if (Test-Path -LiteralPath $output) {
-        throw "O instalador '$output' já existe; sobrescrita foi recusada."
+        throw "O pacote '$output' já existe; sobrescrita foi recusada."
     }
-    Move-Item -LiteralPath $temporaryMsi -Destination $output
-    Write-Host "SUCESSO: MSI assinado e validado em '$output'." -ForegroundColor Green
+    $staging = Join-Path $outputRoot (".$packageName-" + [guid]::NewGuid().ToString('N') + '.partial')
+    New-Item -ItemType Directory -Path $staging | Out-Null
+    try {
+        $publishedMsi = Join-Path $staging (Split-Path -Leaf $temporaryMsi)
+        Copy-Item -LiteralPath $temporaryMsi -Destination $publishedMsi
+        Copy-Item -LiteralPath $launcherBatch -Destination (Join-Path $staging 'Instalar-ou-Abrir.bat')
+        Copy-Item -LiteralPath $temporaryLauncher -Destination (Join-Path $staging 'Instalar-ou-Abrir.ps1')
+        Assert-ExpectedSignature $publishedMsi $expectedThumbprint
+        Move-Item -LiteralPath $staging -Destination $output
+    } catch {
+        if (Test-Path -LiteralPath $staging) {
+            Remove-Item -LiteralPath $staging -Recurse -Force
+        }
+        throw
+    }
+    Write-Host "SUCESSO: pacote assinado e pronto para o usuário em '$output'." -ForegroundColor Green
 } finally {
     if (Test-Path -LiteralPath $temporaryDirectory) {
         Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force

@@ -8,7 +8,7 @@
 | Windows 10 com edição/ESU ainda suportado | validação adicional      | suporte restrito |
 | Windows x86/ARM, macOS ou Linux           | edição e testes parciais | fora do escopo   |
 
-Builds, DPAPI, serviço, ACL, firewall, mDNS e MSI devem ser validados nativamente em Windows/MSVC. WSL é útil para edição e verificações independentes da plataforma, mas não substitui essa validação.
+Builds, DPAPI, serviço, ACL, firewall, mDNS e instalação por script devem ser validados nativamente em Windows/MSVC. WSL é útil para edição e verificações independentes da plataforma, mas não substitui essa validação.
 
 ## Caminho recomendado
 
@@ -36,7 +36,7 @@ Por padrão ele apenas valida: não modifica a estação. A instalação assisti
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-windows.ps1 -InstallMissing
 ```
 
-Não eleve o PowerShell e não use `-InstallMissing` em servidor com dados reais. O `winget` solicita elevação separadamente quando um instalador precisa dela; builds e scripts de dependências continuam no token normal. O iniciador não instala serviço, não altera firewall, não confia em CA e não gera MSI.
+Não eleve o PowerShell e não use `-InstallMissing` em servidor com dados reais. O `winget` solicita elevação separadamente quando um instalador precisa dela; builds e scripts de dependências continuam no token normal. Esse iniciador de desenvolvimento não instala serviço, não altera firewall e não confia em CA.
 
 O iniciador aguarda explicitamente cada processo e funciona no Windows PowerShell 5.1 ou PowerShell 7, inclusive em terminais com saída redirecionada. Quando a cópia portátil versionada de Strawberry Perl/NASM já existe no perfil, ela é reutilizada sem instalação global.
 
@@ -49,7 +49,7 @@ O iniciador aguarda explicitamente cada processo e funciona no Windows PowerShel
 - Perl e NASM para OpenSSL/SQLCipher vendorizados;
 - PowerShell 7 recomendado.
 
-O usuário final não precisa desses componentes: o MSI futuro conterá o binário Rust e a SPA incorporada.
+O usuário final não precisa desses componentes: o pacote portátil contém o binário Rust e a SPA incorporada.
 
 ## Execução manual
 
@@ -110,6 +110,7 @@ Migrations em `src-tauri/migrations/` são forward-only e imutáveis depois de c
 
 - `0001_foundation.sql`: instalação, organização, unidade, master, configuração, backup/recovery e auditoria;
 - `0002_web_identity_sessions.sql`: sessões web, expiração, revogação e índices.
+- `0003_operational_audit.sql`: resultado, correlação, sessão, origem e índices da auditoria.
 
 Teste sempre banco vazio e upgrade da versão anterior. Não execute SQL manual em dados reais. A auditoria possui triggers contra `UPDATE` e `DELETE`.
 
@@ -123,7 +124,7 @@ O log interno do SQLCipher é desabilitado antes da chave (`cipher_log_level = N
 
 `cipher_memory_security` permanece desabilitado até o teste Windows específico de quota/`VirtualLock` ser aprovado. Isso é um gate operacional, não um motivo para enfraquecer a cifra em disco.
 
-## Serviço e MSI
+## Serviço e instalação por script
 
 O alvo operacional é um Windows Service sob `LocalService`, início automático, perfil carregado e SID restrito. O instalador deve:
 
@@ -135,15 +136,23 @@ O alvo operacional é um Windows Service sob `LocalService`, início automático
 
 Empacotamento utilizável deve falhar enquanto licença do produto, certificado de assinatura, SQLCipher runtime ≥ 4.17 ou gates de segurança estiverem ausentes. CI não publica, não assina e não faz upload de artefatos.
 
-O authoring WiX pode ser compilado e validado sem produzir artefato distribuível:
+O pacote portátil para teste local pode ser criado com:
 
 ```powershell
-.\installer\build-msi.ps1 -ValidationOnly
+.\scripts\build-portable-package.ps1 -Development
 ```
 
-Esse modo exige WiX 4.0.6, usa uma declaração marcada como não-licença, cria o MSI somente em diretório temporário e o remove ao terminar. O modo real exige `-ProductLicenseFile`, assinatura válida do executável e as variáveis seguras de assinatura/timestamp; recusa sobrescrever um MSI existente.
+Ele publica em `artifacts\portable\OfflineDentalSystem-<versão>-windows-x64\`, fica marcado como não distribuível e só é aceito pelo bootstrapper executado dentro do repositório. O modo real exige `-ProductLicenseFile`, `ODS_SIGNING_CERT_THUMBPRINT`, executável assinado e timestamp verificável.
 
-O WiX pode estar no `PATH` ou ser uma cópia portátil fixada em `ODS_WIX_EXE`. As extensões Firewall/Util 4.0.6 são adicionadas de forma idempotente ao cache da ferramenta. O gate real exige `distributionReady` booleano, diagnóstico em até 15 segundos e assinatura/timestamp do executável pelo thumbprint configurado. Nenhum desses componentes integra o runtime do produto.
+O pacote contém apenas binário Rust com a SPA embutida, ícone, licença e scripts operacionais. `Instalar-e-Iniciar.bat` usa o ZIP local ou `canal-instalacao.json`, valida paths, tamanhos, SHA-256, lista exata de arquivos e, em distribuição, assinatura/timestamp pelo publisher fixado.
+
+O script instala versões em `%ProgramFiles%\Offline Dental System\versions\<versão>`, mantém dados em `%ProgramData%\OfflineDentalSystem`, configura o Windows Service `OfflineDentalSystem`, ACL restrita, firewall `Private/Domain`, confiança da CA local e atalhos. Não baixa nem mantém Node, Rust, Docker ou Redis no host final.
+
+`Desinstalar-Sistema.bat` preserva dados. `Desinstalar-Tudo.bat` exige a confirmação textual `REMOVER` antes de apagar o diretório de dados. Ambos recusam paths divergentes dos diretórios controlados.
+
+O binário assinado é a fronteira de confiança. BAT/PowerShell são facilitadores operacionais e devem ser entregues por canal autenticado; um bootstrapper `.exe` assinado continua sendo a evolução indicada para distribuição em arquivo físico único.
+
+O authoring MSI permanece apenas como legado de validação e não é mais o fluxo primário.
 
 ## Diagnóstico seguro
 

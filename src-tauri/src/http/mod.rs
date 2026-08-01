@@ -9,7 +9,10 @@ use std::{
 use axum::{
     Json, Router,
     body::Body,
-    extract::{ConnectInfo, FromRef, Path as AxumPath, State, rejection::JsonRejection},
+    extract::{
+        ConnectInfo, Extension, FromRef, MatchedPath, Path as AxumPath, Query, State,
+        rejection::JsonRejection,
+    },
     http::{
         HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode, Uri,
         header::{self, HOST, ORIGIN},
@@ -32,8 +35,9 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use crate::{
     application::{AuthenticationService, SetupService},
     domain::{
-        AppError, AppResult, AuthSession, ConfirmSetupInput, InitialSetupInput, LoginInput,
-        MasterUserInput, OrganizationInput, SetupProgress, StartupState, StorageInput, UnitInput,
+        AppError, AppResult, AuditEvent, AuthSession, ConfirmSetupInput, InitialSetupInput,
+        LoginInput, MasterUserInput, OrganizationInput, SetupProgress, StartupState, StorageInput,
+        UnitInput,
     },
 };
 
@@ -179,6 +183,7 @@ pub fn admin_router(state: HttpState, port: u16) -> Router {
         .layer(CatchPanicLayer::new())
         .layer(middleware::from_fn(normalize_api_response))
         .layer(middleware::from_fn(security_headers))
+        .layer(middleware::from_fn(request_observability))
         .layer(middleware::from_fn(correlation_id))
 }
 
@@ -190,6 +195,7 @@ pub fn lan_router(state: HttpState, allowed_hosts: Vec<String>) -> Router {
         .route("/api/v1/auth/logout", post(logout))
         .route("/api/v1/auth/session", get(session))
         .route("/api/v1/auth/csrf/rotate", post(rotate_csrf))
+        .route("/api/v1/audit/events", get(audit_events))
         .route("/api/v1/pairing/complete", post(complete_pairing))
         .fallback(spa)
         .with_state(state)
@@ -199,6 +205,7 @@ pub fn lan_router(state: HttpState, allowed_hosts: Vec<String>) -> Router {
         .layer(middleware::from_fn(normalize_api_response))
         .layer(middleware::from_fn(security_headers))
         .layer(middleware::from_fn(hsts))
+        .layer(middleware::from_fn(request_observability))
         .layer(middleware::from_fn(correlation_id))
 }
 
@@ -391,6 +398,7 @@ struct HealthResponse {
 async fn login(
     State(state): State<HttpState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Extension(correlation_id): Extension<String>,
     jar: CookieJar,
     payload: Result<Json<LoginInput>, JsonRejection>,
 ) -> ApiResult<Response> {
@@ -407,7 +415,7 @@ async fn login(
     let result = blocking(move || {
         let _hash_permit = hash_permit;
         ensure_ready(&setup)?;
-        auth.login(payload)
+        auth.login_with_context(payload, Some(&correlation_id), "LAN")
     })
     .await;
     let issued = match result {
@@ -460,6 +468,7 @@ async fn session(State(state): State<HttpState>, jar: CookieJar) -> ApiResult<Re
 
 async fn logout(
     State(state): State<HttpState>,
+    Extension(correlation_id): Extension<String>,
     jar: CookieJar,
     headers: HeaderMap,
 ) -> ApiResult<(CookieJar, StatusCode)> {
@@ -474,7 +483,7 @@ async fn logout(
     let auth = state.auth.clone();
     blocking(move || {
         ensure_ready(&setup)?;
-        auth.logout(&session_token, &csrf)
+        auth.logout_with_context(&session_token, &csrf, Some(&correlation_id), "LAN")
     })
     .await?;
     Ok((clear_auth_cookies(jar), StatusCode::NO_CONTENT))
@@ -482,6 +491,7 @@ async fn logout(
 
 async fn rotate_csrf(
     State(state): State<HttpState>,
+    Extension(correlation_id): Extension<String>,
     jar: CookieJar,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
@@ -494,7 +504,7 @@ async fn rotate_csrf(
     let auth = state.auth.clone();
     let issued = blocking(move || {
         ensure_ready(&setup)?;
-        auth.rotate(&session_token, &csrf)
+        auth.rotate_with_context(&session_token, &csrf, Some(&correlation_id), "LAN")
     })
     .await?;
     let response = (
@@ -503,6 +513,38 @@ async fn rotate_csrf(
     )
         .into_response();
     with_csrf_header(response, &issued.csrf_token)
+}
+
+#[derive(Deserialize)]
+struct AuditEventsQuery {
+    limit: Option<u32>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuditEventsResponse {
+    events: Vec<AuditEvent>,
+}
+
+async fn audit_events(
+    State(state): State<HttpState>,
+    Extension(correlation_id): Extension<String>,
+    jar: CookieJar,
+    Query(query): Query<AuditEventsQuery>,
+) -> ApiResult<Json<AuditEventsResponse>> {
+    let session_token = jar
+        .get(SESSION_COOKIE)
+        .map(|cookie| cookie.value().to_owned())
+        .ok_or_else(|| ApiError::from(AppError::unauthenticated()))?;
+    let setup = state.setup.clone();
+    let auth = state.auth.clone();
+    let limit = query.limit.unwrap_or(50).clamp(1, 100);
+    let events = blocking(move || {
+        ensure_ready(&setup)?;
+        auth.audit_events(&session_token, &correlation_id, limit)
+    })
+    .await?;
+    Ok(Json(AuditEventsResponse { events }))
 }
 
 fn resolve_storage(
@@ -690,6 +732,51 @@ async fn correlation_id(mut request: Request<Body>, next: Next) -> Response {
         response
             .headers_mut()
             .insert(HeaderName::from_static(CORRELATION_HEADER), value);
+    }
+    response
+}
+
+async fn request_observability(request: Request<Body>, next: Next) -> Response {
+    let started = Instant::now();
+    let method = request.method().clone();
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|path| path.as_str().to_owned())
+        .unwrap_or_else(|| {
+            if request.uri().path().starts_with("/api/") {
+                "/api/<unmatched>".to_owned()
+            } else {
+                "<spa>".to_owned()
+            }
+        });
+    let correlation_id = request.extensions().get::<String>().cloned();
+    let remote_ip = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|peer| peer.0.ip().to_string());
+    let response = next.run(request).await;
+    let duration_ms = started.elapsed().as_millis() as u64;
+    if route == "/api/v1/health" {
+        tracing::debug!(
+            event = "HTTP_REQUEST",
+            correlation_id,
+            method = %method,
+            route,
+            status = response.status().as_u16(),
+            duration_ms,
+            remote_ip
+        );
+    } else {
+        tracing::info!(
+            event = "HTTP_REQUEST",
+            correlation_id,
+            method = %method,
+            route,
+            status = response.status().as_u16(),
+            duration_ms,
+            remote_ip
+        );
     }
     response
 }

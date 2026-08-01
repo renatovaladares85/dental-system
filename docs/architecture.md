@@ -88,7 +88,7 @@ Pareamento abre uma janela de dez minutos com token one-shot e fingerprint SHA-2
 
 ## Serviço e instalação
 
-O binário aceita execução interativa para desenvolvimento e modo de serviço para produção. O MSI previsto:
+O binário aceita execução interativa para desenvolvimento e modo de serviço para produção. O bootstrapper BAT/PowerShell:
 
 1. copia somente artefatos compilados;
 2. instala o serviço com início automático e SID restrito;
@@ -96,9 +96,9 @@ O binário aceita execução interativa para desenvolvimento e modo de serviço 
 4. cria firewall somente para Private/Domain na porta 8743;
 5. cria atalho do setup loopback;
 6. inicia o serviço e abre o navegador após o health check;
-7. preserva dados e materiais criptográficos em repair/uninstall.
+7. preserva dados e materiais criptográficos na desinstalação padrão.
 
-O projeto prepara e valida a configuração do MSI, mas não assina nem publica artefatos sem licença e certificado aprovados.
+O pacote final contém o binário pré-compilado com a SPA embutida; não instala toolchains no host. O projeto não assina nem publica artefatos sem licença e certificado aprovados.
 
 ## Escolhas deliberadas
 

@@ -1,7 +1,7 @@
 # ADR 006 — Servidor web nativo local
 
 - **Status:** aceita; substitui os ADRs 001 e 004
-- **Data:** 2026-07-22
+- **Data:** 2026-07-22; instalação revisada em 2026-07-31
 
 ## Contexto
 
@@ -29,9 +29,9 @@ O diretório histórico `src-tauri/` poderá permanecer como raiz do crate duran
 
 ## Instalação e operação
 
-O MSI instala o binário e o serviço, restringe a regra de firewall aos perfis Private/Domain, cria o atalho administrativo e aguarda o health check antes de abrir o navegador. Repair e uninstall preservam banco, chaves e backups por padrão.
+Um bootstrapper BAT/PowerShell instala o pacote pré-compilado, registra o serviço, restringe a regra de firewall aos perfis Private/Domain, cria os atalhos e aguarda o health check antes de abrir o navegador. A desinstalação padrão preserva banco, chaves e backups; a remoção completa exige confirmação destrutiva explícita.
 
-O MSI não é distribuível enquanto licença do produto, certificado de assinatura, restauração completa e demais gates de segurança não estiverem concluídos. O build de desenvolvimento não implica aprovação de release.
+O pacote não é distribuível enquanto licença do produto, certificado de assinatura, restauração completa e demais gates de segurança não estiverem concluídos. O build de desenvolvimento não implica aprovação de release.
 
 ## Consequências
 

@@ -14,14 +14,18 @@ use zeroize::Zeroizing;
 
 use crate::{
     application::SessionStore,
-    domain::{AppError, AppResult, AuthUser, LoginUserRecord, NewSessionRecord, SessionRecord},
+    domain::{
+        AppError, AppResult, AuditEvent, AuthUser, LoginUserRecord, NewSessionRecord, SessionRecord,
+    },
 };
 
 const FOUNDATION_MIGRATION: &str = include_str!("../../migrations/0001_foundation.sql");
 const WEB_IDENTITY_SESSIONS_MIGRATION: &str =
     include_str!("../../migrations/0002_web_identity_sessions.sql");
+const OPERATIONAL_AUDIT_MIGRATION: &str =
+    include_str!("../../migrations/0003_operational_audit.sql");
 const MINIMUM_DISTRIBUTION_SQLCIPHER: &str = "4.17.0";
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone)]
 pub struct CipherDiagnostics {
@@ -122,6 +126,8 @@ impl SessionStore for DatabaseWorker {
         new_csrf_hash: &[u8; 32],
         now: &str,
         idle_expires_at: &str,
+        correlation_id: Option<&str>,
+        source: &str,
     ) -> AppResult<()> {
         DatabaseWorker::rotate_session(
             self,
@@ -131,6 +137,8 @@ impl SessionStore for DatabaseWorker {
             new_csrf_hash,
             now,
             idle_expires_at,
+            correlation_id,
+            source,
         )
     }
 
@@ -140,8 +148,28 @@ impl SessionStore for DatabaseWorker {
         token_hash: &[u8; 32],
         user_id: &str,
         now: &str,
+        correlation_id: Option<&str>,
+        source: &str,
     ) -> AppResult<()> {
-        DatabaseWorker::revoke_session(self, session_id, token_hash, user_id, now)
+        DatabaseWorker::revoke_session(
+            self,
+            session_id,
+            token_hash,
+            user_id,
+            now,
+            correlation_id,
+            source,
+        )
+    }
+
+    fn list_audit_events(
+        &self,
+        user_id: &str,
+        session_id: &str,
+        correlation_id: &str,
+        limit: u32,
+    ) -> AppResult<Vec<AuditEvent>> {
+        DatabaseWorker::list_audit_events(self, user_id, session_id, correlation_id, limit)
     }
 }
 
@@ -436,13 +464,17 @@ impl DatabaseWorker {
                     ],
                 )
                 .map_err(|_| AppError::database())?;
-            insert_user_audit(
+            insert_user_audit_context(
                 &transaction,
                 &session.user_id,
                 "USER_LOGGED_IN",
                 "session",
                 Some(&session.id),
                 &session.created_at,
+                "SUCCESS",
+                session.correlation_id.as_deref(),
+                Some(&session.id),
+                &session.source,
             )?;
             transaction.commit().map_err(|_| AppError::database())
         })
@@ -526,6 +558,7 @@ impl DatabaseWorker {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn rotate_session(
         &self,
         session_id: &str,
@@ -534,9 +567,12 @@ impl DatabaseWorker {
         new_csrf_hash: &[u8; 32],
         now: &str,
         idle_expires_at: &str,
+        correlation_id: Option<&str>,
+        source: &str,
     ) -> AppResult<()> {
         self.with_connection(|connection| {
-            let changed = connection
+            let transaction = connection.transaction().map_err(|_| AppError::database())?;
+            let changed = transaction
                 .execute(
                     "UPDATE sessions
                      SET token_hash = ?1, csrf_hash = ?2, last_seen_at = ?3,
@@ -557,7 +593,26 @@ impl DatabaseWorker {
             if changed != 1 {
                 return Err(AppError::unauthenticated());
             }
-            Ok(())
+            let user_id: String = transaction
+                .query_row(
+                    "SELECT user_id FROM sessions WHERE id = ?1",
+                    [session_id],
+                    |row| row.get(0),
+                )
+                .map_err(|_| AppError::database())?;
+            insert_user_audit_context(
+                &transaction,
+                &user_id,
+                "SESSION_SECURITY_ROTATED",
+                "session",
+                Some(session_id),
+                now,
+                "SUCCESS",
+                correlation_id,
+                Some(session_id),
+                source,
+            )?;
+            transaction.commit().map_err(|_| AppError::database())
         })
     }
 
@@ -567,6 +622,8 @@ impl DatabaseWorker {
         token_hash: &[u8; 32],
         user_id: &str,
         now: &str,
+        correlation_id: Option<&str>,
+        source: &str,
     ) -> AppResult<()> {
         self.with_connection(|connection| {
             let transaction = connection.transaction().map_err(|_| AppError::database())?;
@@ -580,15 +637,79 @@ impl DatabaseWorker {
             if changed != 1 {
                 return Err(AppError::unauthenticated());
             }
-            insert_user_audit(
+            insert_user_audit_context(
                 &transaction,
                 user_id,
                 "USER_LOGGED_OUT",
                 "session",
                 Some(session_id),
                 now,
+                "SUCCESS",
+                correlation_id,
+                Some(session_id),
+                source,
             )?;
             transaction.commit().map_err(|_| AppError::database())
+        })
+    }
+
+    pub fn list_audit_events(
+        &self,
+        user_id: &str,
+        session_id: &str,
+        correlation_id: &str,
+        limit: u32,
+    ) -> AppResult<Vec<AuditEvent>> {
+        let limit = i64::from(limit.clamp(1, 100));
+        self.with_connection(|connection| {
+            let transaction = connection.transaction().map_err(|_| AppError::database())?;
+            insert_user_audit_context(
+                &transaction,
+                user_id,
+                "AUDIT_LOG_VIEWED",
+                "audit_log",
+                None,
+                &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                "SUCCESS",
+                Some(correlation_id),
+                Some(session_id),
+                "LAN",
+            )?;
+            let events = {
+                let mut statement = transaction
+                    .prepare(
+                        "SELECT a.id, a.actor_type, a.actor_user_id, u.username,
+                                a.action, a.entity_type, a.entity_id, a.result,
+                                a.correlation_id, a.session_id, a.source, a.occurred_at
+                         FROM audit_events a
+                         LEFT JOIN users u ON u.id = a.actor_user_id
+                         ORDER BY a.occurred_at DESC, a.id DESC
+                         LIMIT ?1",
+                    )
+                    .map_err(|_| AppError::database())?;
+                let rows = statement
+                    .query_map([limit], |row| {
+                        Ok(AuditEvent {
+                            id: row.get(0)?,
+                            actor_type: row.get(1)?,
+                            actor_user_id: row.get(2)?,
+                            actor_username: row.get(3)?,
+                            action: row.get(4)?,
+                            entity_type: row.get(5)?,
+                            entity_id: row.get(6)?,
+                            result: row.get(7)?,
+                            correlation_id: row.get(8)?,
+                            session_id: row.get(9)?,
+                            source: row.get(10)?,
+                            occurred_at: row.get(11)?,
+                        })
+                    })
+                    .map_err(|_| AppError::database())?;
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| AppError::database())?
+            };
+            transaction.commit().map_err(|_| AppError::database())?;
+            Ok(events)
         })
     }
 
@@ -652,18 +773,28 @@ pub fn runtime_security_diagnostics() -> AppResult<RuntimeSecurityDiagnostics> {
 }
 
 fn migrate_database(connection: &Connection) -> AppResult<()> {
-    let version: i64 = connection
+    let mut version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(|_| AppError::database())?;
-    match version {
-        1 => connection
+    if version == 1 {
+        connection
             .execute_batch(WEB_IDENTITY_SESSIONS_MIGRATION)
-            .map_err(|_| AppError::database()),
-        2 => Ok(()),
-        _ => Err(AppError::new(
+            .map_err(|_| AppError::database())?;
+        version = 2;
+    }
+    if version == 2 {
+        connection
+            .execute_batch(OPERATIONAL_AUDIT_MIGRATION)
+            .map_err(|_| AppError::database())?;
+        version = 3;
+    }
+    if version == CURRENT_SCHEMA_VERSION as i64 {
+        Ok(())
+    } else {
+        Err(AppError::new(
             "UNSUPPORTED_DATABASE_SCHEMA",
             "A versão do banco de dados não é compatível com esta aplicação.",
-        )),
+        ))
     }
 }
 
@@ -1072,28 +1203,38 @@ fn insert_audit(
     Ok(())
 }
 
-fn insert_user_audit(
+#[allow(clippy::too_many_arguments)]
+fn insert_user_audit_context(
     transaction: &Transaction<'_>,
     user_id: &str,
     action: &str,
     entity_type: &str,
     entity_id: Option<&str>,
     now: &str,
+    result: &str,
+    correlation_id: Option<&str>,
+    session_id: Option<&str>,
+    source: &str,
 ) -> AppResult<()> {
     let inserted = transaction
         .execute(
             "INSERT INTO audit_events
              (id, installation_id, actor_type, actor_user_id, action, entity_type,
-              entity_id, metadata_json, occurred_at)
-             SELECT ?1, u.installation_id, 'USER', u.id, ?2, ?3, ?4, '{}', ?5
-             FROM users u WHERE u.id = ?6",
+              entity_id, metadata_json, occurred_at, result, correlation_id, session_id, source)
+             SELECT ?1, u.installation_id, 'USER', u.id, ?2, ?3, ?4, '{}', ?5,
+                    ?6, ?7, ?8, ?9
+             FROM users u WHERE u.id = ?10",
             params![
                 uuid::Uuid::now_v7().to_string(),
                 action,
                 entity_type,
                 entity_id,
                 now,
-                user_id,
+                result,
+                correlation_id,
+                session_id,
+                source,
+                user_id
             ],
         )
         .map_err(|_| AppError::database())?;
@@ -1169,7 +1310,7 @@ mod tests {
     }
 
     #[test]
-    fn clean_bootstrap_applies_web_session_migration() {
+    fn clean_bootstrap_applies_all_forward_migrations() {
         let directory = tempdir().expect("tempdir");
         let path = directory.path().join("database.sqlcipher");
         let key = [7_u8; 32];
@@ -1190,9 +1331,67 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("sessions table");
-        assert_eq!(user_version, 2);
-        assert_eq!(schema_version, 2);
+        let audit_context_columns: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('audit_events')
+                 WHERE name IN ('result', 'correlation_id', 'session_id', 'source')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("audit context columns");
+        assert_eq!(user_version, CURRENT_SCHEMA_VERSION as i64);
+        assert_eq!(schema_version, CURRENT_SCHEMA_VERSION as i64);
         assert_eq!(sessions_table, 1);
+        assert_eq!(audit_context_columns, 4);
+    }
+
+    #[test]
+    fn session_audit_persists_actor_session_source_and_correlation() {
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("database.sqlcipher");
+        let key = [7_u8; 32];
+        let bootstrap = bootstrap();
+        let user_id = bootstrap.master_user_id.clone();
+        create_foundation_database(&path, &key, &bootstrap).expect("database");
+        let worker = DatabaseWorker::new(path);
+        worker.open(&key).expect("open worker");
+        let correlation_id = "019b1234-1234-7123-8123-123456789abc";
+        worker
+            .create_session(&NewSessionRecord {
+                id: "session-audit".to_owned(),
+                user_id,
+                token_hash: [1_u8; 32],
+                csrf_hash: [2_u8; 32],
+                created_at: "2026-07-31T12:00:00.000Z".to_owned(),
+                idle_expires_at: "2026-07-31T12:30:00.000Z".to_owned(),
+                absolute_expires_at: "2026-08-01T00:00:00.000Z".to_owned(),
+                correlation_id: Some(correlation_id.to_owned()),
+                source: "LAN".to_owned(),
+            })
+            .expect("create session");
+
+        worker
+            .with_connection(|connection| {
+                let context: (String, String, String, String) = connection
+                    .query_row(
+                        "SELECT action, correlation_id, session_id, source
+                         FROM audit_events WHERE action = 'USER_LOGGED_IN'",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    )
+                    .map_err(|_| AppError::database())?;
+                assert_eq!(
+                    context,
+                    (
+                        "USER_LOGGED_IN".to_owned(),
+                        correlation_id.to_owned(),
+                        "session-audit".to_owned(),
+                        "LAN".to_owned(),
+                    )
+                );
+                Ok(())
+            })
+            .expect("audit context");
     }
 
     #[test]
@@ -1276,6 +1475,8 @@ mod tests {
                         created_at: "2026-07-22T12:00:00.000Z".to_owned(),
                         idle_expires_at: "2099-07-22T12:30:00.000Z".to_owned(),
                         absolute_expires_at: "2099-07-23T00:00:00.000Z".to_owned(),
+                        correlation_id: None,
+                        source: "APPLICATION".to_owned(),
                     })
                     .expect("serialized session write");
             }));

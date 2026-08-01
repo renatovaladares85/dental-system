@@ -51,7 +51,28 @@ pub struct StartupDiagnosticIssue {
     pub severity: &'static str,
 }
 
+#[derive(Clone, Copy)]
+struct StartupDiagnosticPorts {
+    admin: u16,
+    lan: u16,
+}
+
 pub fn collect(product_root: Option<&Path>, program_data_available: bool) -> StartupDiagnostics {
+    collect_with_ports(
+        product_root,
+        program_data_available,
+        StartupDiagnosticPorts {
+            admin: 8742,
+            lan: 8743,
+        },
+    )
+}
+
+fn collect_with_ports(
+    product_root: Option<&Path>,
+    program_data_available: bool,
+    ports: StartupDiagnosticPorts,
+) -> StartupDiagnostics {
     let product_root_exists = product_root.is_some_and(Path::is_dir);
     let data_directory = product_root.map(|root| root.join("Data"));
     let data_directory_exists = data_directory.as_deref().is_some_and(Path::is_dir);
@@ -67,8 +88,8 @@ pub fn collect(product_root: Option<&Path>, program_data_available: bool) -> Sta
         .as_deref()
         .is_some_and(directory_is_not_read_only);
     let instance_lock_available = product_root.is_some_and(instance_lock_available);
-    let admin_port_available = port_is_available(8742);
-    let lan_port_available = lan_port_is_available(8743);
+    let admin_port_available = port_is_available(ports.admin);
+    let lan_port_available = lan_port_is_available(ports.lan);
     let runtime_diagnostics = runtime_security_diagnostics().ok();
     let sqlcipher_version = runtime_diagnostics
         .as_ref()
@@ -297,7 +318,7 @@ fn tls_state(product_root: &Path) -> &'static str {
 mod tests {
     use std::{fs, net::TcpListener};
 
-    use super::{collect, lan_port_is_available};
+    use super::{StartupDiagnosticPorts, collect, collect_with_ports, lan_port_is_available};
 
     #[test]
     fn diagnostics_do_not_create_a_missing_product_root() {
@@ -329,10 +350,18 @@ mod tests {
 
     #[test]
     fn diagnostics_report_an_occupied_admin_port() {
-        let listener = TcpListener::bind("127.0.0.1:8742").expect("reserve admin port");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("reserve admin port");
+        let admin_port = listener.local_addr().expect("listener address").port();
         let temporary = tempfile::tempdir().expect("temporary directory");
 
-        let diagnostics = collect(Some(temporary.path()), true);
+        let diagnostics = collect_with_ports(
+            Some(temporary.path()),
+            true,
+            StartupDiagnosticPorts {
+                admin: admin_port,
+                lan: 0,
+            },
+        );
 
         assert!(!diagnostics.admin_port_available);
         assert!(

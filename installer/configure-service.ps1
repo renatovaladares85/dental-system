@@ -16,14 +16,12 @@ if (-not (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) {
 }
 
 function Invoke-ServiceControl([string[]]$Arguments) {
-    $process = Start-Process `
-        -FilePath $sc `
-        -ArgumentList $Arguments `
-        -Wait `
-        -NoNewWindow `
-        -PassThru
-    if ($process.ExitCode -ne 0) {
-        throw "Falha ao configurar o serviço (código $($process.ExitCode))."
+    $output = & $sc @Arguments 2>&1
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        $diagnostic = ($output | Out-String).Trim()
+        if ($diagnostic) { Write-Verbose $diagnostic }
+        throw "Falha ao configurar o serviço (código $exitCode)."
     }
 }
 

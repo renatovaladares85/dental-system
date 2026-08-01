@@ -47,12 +47,6 @@
                   Impersonate="no"
                   Return="check"
                   HideTarget="yes" />
-    <CustomAction Id="LaunchAfterInstall"
-                  Directory="SystemFolder"
-                  ExeCommand="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]launch-after-install.ps1&quot;"
-                  Execute="immediate"
-                  Impersonate="yes"
-                  Return="asyncNoWait" />
     <InstallExecuteSequence>
       <Custom Action="ConfigureDentalService"
               After="InstallServices"
@@ -60,9 +54,6 @@
       <Custom Action="ConfigureHostTrust"
               After="StartServices"
               Condition="NOT REMOVE~=&quot;ALL&quot;" />
-      <Custom Action="LaunchAfterInstall"
-              After="InstallFinalize"
-              Condition="NOT Installed AND UILevel &gt;= 4" />
     </InstallExecuteSequence>
   </Package>
 
@@ -151,9 +142,6 @@
         <File Id="ConfigureServiceScript"
               Source="$(var.ConfigureServiceScript)"
               Name="configure-service.ps1" />
-        <File Id="LaunchAfterInstallScript"
-              Source="$(var.LaunchAfterInstallScript)"
-              Name="launch-after-install.ps1" />
         <File Id="ApplicationIcon"
               Source="$(var.ApplicationIcon)"
               Name="offline-dental-system.ico" />

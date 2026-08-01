@@ -8,6 +8,14 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+$script:ValidationLicenseFile = $null
+
+trap {
+    if ($script:ValidationLicenseFile -and (Test-Path -LiteralPath $script:ValidationLicenseFile)) {
+        Remove-Item -LiteralPath $script:ValidationLicenseFile -Force -ErrorAction SilentlyContinue
+    }
+    throw $_
+}
 
 # Windows PowerShell 5.1 does not guarantee that this automatic variable exists
 # in a fresh process before the first native command reports an exit code.
@@ -18,10 +26,6 @@ $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $installerRoot '..'))
 $packageSource = Join-Path $installerRoot 'Package.wxs'
 $configureServiceScript = Join-Path $installerRoot 'configure-service.ps1'
 $configureScript = Join-Path $installerRoot 'configure-host-trust.ps1'
-$launchScript = Join-Path $installerRoot 'launch-after-install.ps1'
-$launcherBatch = Join-Path $installerRoot 'Instalar-ou-Abrir.bat'
-$launcherScriptTemplate = Join-Path $installerRoot 'Instalar-ou-Abrir.ps1'
-$launcherThumbprintToken = '__ODS_SIGNING_CERT_THUMBPRINT__'
 $applicationIcon = Join-Path $repositoryRoot 'src-tauri\icons\icon.ico'
 $minimumSqlCipher = [version]'4.17.0'
 $wixVersion = '4.0.6'
@@ -41,26 +45,12 @@ foreach ($requiredFile in @(
     $packageSource,
     $configureServiceScript,
     $configureScript,
-    $launchScript,
-    $launcherBatch,
-    $launcherScriptTemplate,
     $applicationIcon
 )) {
     if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
         throw "Arquivo obrigatório do instalador ausente: '$requiredFile'."
     }
 }
-$launcherTokens = $null
-$launcherParseErrors = $null
-[Management.Automation.Language.Parser]::ParseFile(
-    $launcherScriptTemplate,
-    [ref]$launcherTokens,
-    [ref]$launcherParseErrors
-) | Out-Null
-if ($launcherParseErrors.Count -gt 0) {
-    throw 'O script do launcher contém erro de sintaxe e não pode integrar a distribuição.'
-}
-
 $cargoManifest = Get-Content -Raw (Join-Path $repositoryRoot 'src-tauri\Cargo.toml')
 $versionMatch = [regex]::Match($cargoManifest, '(?m)^version\s*=\s*"(\d+\.\d+\.\d+)"\s*$')
 if (-not $versionMatch.Success) { throw 'Não foi possível ler a versão do produto no Cargo.toml.' }
@@ -108,9 +98,14 @@ if (-not $ValidationOnly -and
     throw "Distribuição bloqueada: SQLCipher >= $minimumSqlCipher e distributionReady=true são obrigatórios."
 }
 
-$validationLicenseFile = [IO.Path]::GetFullPath((Join-Path $installerRoot 'validation-NOT-FOR-DISTRIBUTION.txt'))
 if ($ValidationOnly) {
-    $ProductLicenseFile = $validationLicenseFile
+    $script:ValidationLicenseFile = [IO.Path]::GetTempFileName()
+    [IO.File]::WriteAllText(
+        $script:ValidationLicenseFile,
+        'VALIDATION ONLY — NOT A PRODUCT LICENSE — DO NOT DISTRIBUTE',
+        [Text.UTF8Encoding]::new($false)
+    )
+    $ProductLicenseFile = $script:ValidationLicenseFile
 } elseif (-not $ProductLicenseFile) {
     $ProductLicenseFile = $env:ODS_PRODUCT_LICENSE_FILE
 }
@@ -120,7 +115,7 @@ if (-not $ProductLicenseFile -or -not (Test-Path -LiteralPath $ProductLicenseFil
 $ProductLicenseFile = [IO.Path]::GetFullPath($ProductLicenseFile)
 if ((Get-Item -LiteralPath $ProductLicenseFile).Length -eq 0) { throw 'O arquivo de licença está vazio.' }
 if (-not $ValidationOnly -and
-    ($ProductLicenseFile.Equals($validationLicenseFile, [StringComparison]::OrdinalIgnoreCase) -or
+    ($ProductLicenseFile.Equals($script:ValidationLicenseFile, [StringComparison]::OrdinalIgnoreCase) -or
      (Get-Content -Raw -LiteralPath $ProductLicenseFile) -match '(?i)NOT[ -]FOR[ -]DISTRIBUTION')) {
     throw 'Distribuição bloqueada: o marcador de validação não é uma licença de produto.'
 }
@@ -227,7 +222,6 @@ try {
         '-d' "ProductLicenseFile=$ProductLicenseFile" `
         '-d' "ConfigureServiceScript=$configureServiceScript" `
         '-d' "ConfigureHostTrustScript=$configureScript" `
-        '-d' "LaunchAfterInstallScript=$launchScript" `
         '-d' "ApplicationIcon=$applicationIcon" `
         '-o' $temporaryMsi
     if ($LASTEXITCODE -ne 0) { throw 'Compilação WiX falhou.' }
@@ -241,28 +235,6 @@ try {
     }
 
     Sign-And-Verify $temporaryMsi
-    $launcherTemplate = Get-Content -Raw -LiteralPath $launcherScriptTemplate
-    if ([regex]::Matches($launcherTemplate, [regex]::Escape($launcherThumbprintToken)).Count -ne 1) {
-        throw 'O template do launcher não contém exatamente um marcador de assinatura.'
-    }
-    $renderedLauncher = $launcherTemplate.Replace($launcherThumbprintToken, $expectedThumbprint)
-    $temporaryLauncher = Join-Path $temporaryDirectory 'Instalar-ou-Abrir.ps1'
-    [IO.File]::WriteAllText(
-        $temporaryLauncher,
-        $renderedLauncher,
-        [Text.UTF8Encoding]::new($true)
-    )
-    $renderedTokens = $null
-    $renderedParseErrors = $null
-    [Management.Automation.Language.Parser]::ParseFile(
-        $temporaryLauncher,
-        [ref]$renderedTokens,
-        [ref]$renderedParseErrors
-    ) | Out-Null
-    if ($renderedParseErrors.Count -gt 0) {
-        throw 'O launcher gerado contém erro de sintaxe.'
-    }
-
     if (-not $OutputDirectory) {
         $OutputDirectory = Join-Path $repositoryRoot 'artifacts\installer'
     }
@@ -278,8 +250,6 @@ try {
     try {
         $publishedMsi = Join-Path $staging (Split-Path -Leaf $temporaryMsi)
         Copy-Item -LiteralPath $temporaryMsi -Destination $publishedMsi
-        Copy-Item -LiteralPath $launcherBatch -Destination (Join-Path $staging 'Instalar-ou-Abrir.bat')
-        Copy-Item -LiteralPath $temporaryLauncher -Destination (Join-Path $staging 'Instalar-ou-Abrir.ps1')
         Assert-ExpectedSignature $publishedMsi $expectedThumbprint
         Move-Item -LiteralPath $staging -Destination $output
     } catch {
@@ -292,5 +262,8 @@ try {
 } finally {
     if (Test-Path -LiteralPath $temporaryDirectory) {
         Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force
+    }
+    if ($script:ValidationLicenseFile -and (Test-Path -LiteralPath $script:ValidationLicenseFile)) {
+        Remove-Item -LiteralPath $script:ValidationLicenseFile -Force
     }
 }

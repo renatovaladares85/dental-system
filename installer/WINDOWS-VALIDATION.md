@@ -10,7 +10,7 @@ uma máquina virtual Windows 11 x64 limpa, nos perfis de rede `Private` e
 - `--security-diagnostics --json` informa SQLCipher `>= 4.17.0` e
   `distributionReady: true`.
 - A licença de produto definitiva foi incorporada; o marcador
-  `validation-NOT-FOR-DISTRIBUTION.txt` não está presente.
+  o fixture temporário de validação é criado fora do repositório e removido ao fim.
 
 ## Serviço, identidade e dados
 

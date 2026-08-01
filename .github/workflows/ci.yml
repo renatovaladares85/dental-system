@@ -130,6 +130,14 @@ jobs:
           rustup toolchain install $channel --profile minimal --component clippy --component rustfmt --target x86_64-pc-windows-msvc
           rustup show active-toolchain
 
+      - name: Testar ambiente MSVC idempotente
+        shell: pwsh
+        run: .\scripts\tests\msvc-environment.tests.ps1
+
+      - name: Testar variáveis reservadas PowerShell
+        shell: pwsh
+        run: .\scripts\tests\powershell-reserved-variable.tests.ps1
+
       - name: Configurar Node.js para assets incorporados
         uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
         with:

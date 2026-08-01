@@ -155,8 +155,11 @@ Antes de qualquer tentativa de reparo, execute o diagnóstico sem escrita:
 ```
 
 O resultado é versionado e não cria banco, chave, TLS, host identity, migration,
-ACL ou regra de firewall. Ele informa apenas estados sanitizados de diretórios,
-lock, portas, identidade, banco, envelope de chave, TLS e logs.
+ACL ou regra de firewall. Os campos `dataDirectoryNotReadOnly` e
+`runtimeLogDirectoryNotReadOnly` refletem apenas o atributo readonly; os campos
+de ACL permanecem `unknown` porque o diagnóstico não cria arquivos para testar
+permissões efetivas. Ele informa estados sanitizados de diretórios, lock, portas,
+identidade, banco, envelope de chave, TLS e logs.
 
 | Sintoma                       | Ação                                                             |
 | ----------------------------- | ---------------------------------------------------------------- |

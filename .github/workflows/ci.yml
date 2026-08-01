@@ -176,7 +176,7 @@ jobs:
           $diagnostics = & $executable --startup-diagnostics --json
           if ($LASTEXITCODE -ne 0) { throw 'Startup diagnostics falhou.' }
           $parsed = $diagnostics | ConvertFrom-Json
-          if ($parsed.formatVersion -ne 1) { throw 'Formato inesperado do startup diagnostics.' }
+          if ($parsed.formatVersion -ne 2) { throw 'Formato inesperado do startup diagnostics.' }
 
       - name: Console smoke
         shell: pwsh

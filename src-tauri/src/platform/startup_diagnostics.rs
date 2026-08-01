@@ -27,7 +27,8 @@ pub struct StartupDiagnostics {
     pub program_data_available: bool,
     pub product_root_exists: bool,
     pub data_directory_exists: bool,
-    pub data_directory_writable: bool,
+    pub data_directory_not_read_only: bool,
+    pub data_directory_acl_state: &'static str,
     pub instance_lock_available: bool,
     pub admin_port_available: bool,
     pub lan_port_available: bool,
@@ -35,7 +36,8 @@ pub struct StartupDiagnostics {
     pub database_state: &'static str,
     pub protected_key_state: &'static str,
     pub tls_state: &'static str,
-    pub runtime_log_directory_available: bool,
+    pub runtime_log_directory_not_read_only: bool,
+    pub runtime_log_directory_acl_state: &'static str,
     pub sqlcipher_version: String,
     pub distribution_ready: bool,
     pub overall_status: &'static str,
@@ -53,14 +55,14 @@ pub fn collect(product_root: Option<&Path>, program_data_available: bool) -> Sta
     let product_root_exists = product_root.is_some_and(Path::is_dir);
     let data_directory = product_root.map(|root| root.join("Data"));
     let data_directory_exists = data_directory.as_deref().is_some_and(Path::is_dir);
-    let data_directory_writable = data_directory
+    let data_directory_not_read_only = data_directory
         .as_deref()
         .is_some_and(directory_is_not_read_only);
     let host_identity_state = product_root.map_or("missing", host_identity_state);
     let database_state = product_root.map_or("missing", database_state);
     let protected_key_state = product_root.map_or("missing", protected_key_state);
     let tls_state = product_root.map_or("missing", tls_state);
-    let runtime_log_directory_available = product_root
+    let runtime_log_directory_not_read_only = product_root
         .map(|root| root.join(RUNTIME_LOG_PATH[0]).join(RUNTIME_LOG_PATH[1]))
         .as_deref()
         .is_some_and(directory_is_not_read_only);
@@ -85,7 +87,7 @@ pub fn collect(product_root: Option<&Path>, program_data_available: bool) -> Sta
     }
     if !data_directory_exists {
         issues.push(issue("STARTUP_DATA_DIRECTORY_MISSING", "warning"));
-    } else if !data_directory_writable {
+    } else if !data_directory_not_read_only {
         issues.push(issue("STARTUP_DATA_DIRECTORY_UNAVAILABLE", "error"));
     }
     if !instance_lock_available {
@@ -111,7 +113,7 @@ pub fn collect(product_root: Option<&Path>, program_data_available: bool) -> Sta
         false,
     );
     add_state_issue(&mut issues, "STARTUP_TLS", tls_state, false);
-    if !runtime_log_directory_available {
+    if !runtime_log_directory_not_read_only {
         issues.push(issue(
             "STARTUP_RUNTIME_LOG_DIRECTORY_UNAVAILABLE",
             "warning",
@@ -133,14 +135,15 @@ pub fn collect(product_root: Option<&Path>, program_data_available: bool) -> Sta
     };
 
     StartupDiagnostics {
-        format_version: 1,
+        format_version: 2,
         product: "Offline Dental System",
         version: env!("CARGO_PKG_VERSION"),
         platform: "windows-x64",
         program_data_available,
         product_root_exists,
         data_directory_exists,
-        data_directory_writable,
+        data_directory_not_read_only,
+        data_directory_acl_state: "unknown",
         instance_lock_available,
         admin_port_available,
         lan_port_available,
@@ -148,7 +151,8 @@ pub fn collect(product_root: Option<&Path>, program_data_available: bool) -> Sta
         database_state,
         protected_key_state,
         tls_state,
-        runtime_log_directory_available,
+        runtime_log_directory_not_read_only,
+        runtime_log_directory_acl_state: "unknown",
         sqlcipher_version,
         distribution_ready,
         overall_status,

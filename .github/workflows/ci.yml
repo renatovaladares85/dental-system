@@ -23,6 +23,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Rejeitar artefatos vazios anormais na raiz
+        shell: pwsh
+        run: |
+          $unexpected = @(Get-ChildItem -LiteralPath . -File -Force | Where-Object {
+            $_.Length -eq 0 -and $_.Name -match '^[^\p{L}\p{N}._-]+$'
+          })
+          if ($unexpected.Count -gt 0) {
+            $names = $unexpected | ForEach-Object Name
+            throw "Arquivos vazios com nomes anormais na raiz: $($names -join ', ')"
+          }
+
       - name: Configurar Node.js
         uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
         with:

@@ -7,6 +7,8 @@ Set-StrictMode -Version Latest
 $serviceName = 'OfflineDentalSystem'
 $productRoot = Join-Path $env:ProgramData 'OfflineDentalSystem'
 $installRoot = Join-Path $env:ProgramFiles 'Offline Dental System'
+$serverExecutable = Join-Path $installRoot 'offline-dental-system.exe'
+$serviceRegistryPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName"
 $firewallNames = @(
     'Offline Dental System HTTPS (Private-Domain)',
     'Offline Dental System mDNS (Private-Domain)',
@@ -17,6 +19,7 @@ $firewallNames = @(
 )
 
 $service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction SilentlyContinue
+$serviceRegistry = Get-ItemProperty -LiteralPath $serviceRegistryPath -ErrorAction SilentlyContinue
 $ports = @(8742, 8743 | ForEach-Object {
     Get-NetTCPConnection -LocalPort $_ -State Listen -ErrorAction SilentlyContinue |
         Select-Object LocalAddress, LocalPort, OwningProcess
@@ -34,6 +37,26 @@ $health = try {
 } catch {
     [pscustomobject]@{ error = 'HEALTH_UNAVAILABLE' }
 }
+$startupDiagnostics = if (Test-Path -LiteralPath $serverExecutable -PathType Leaf) {
+    try {
+        $json = & $serverExecutable '--startup-diagnostics' '--json' 2>$null
+        if ($LASTEXITCODE -ne 0) { throw 'diagnóstico indisponível' }
+        $json | ConvertFrom-Json
+    } catch {
+        [pscustomobject]@{ error = 'STARTUP_DIAGNOSTICS_UNAVAILABLE' }
+    }
+} else {
+    [pscustomobject]@{ error = 'EXECUTABLE_MISSING' }
+}
+$signature = if (Test-Path -LiteralPath $serverExecutable -PathType Leaf) {
+    $authenticode = Get-AuthenticodeSignature -LiteralPath $serverExecutable
+    [pscustomobject]@{
+        status = $authenticode.Status.ToString()
+        thumbprint = if ($authenticode.SignerCertificate) { $authenticode.SignerCertificate.Thumbprint } else { $null }
+    }
+} else { $null }
+$runtimeLogs = @(Get-ChildItem -LiteralPath (Join-Path $productRoot 'logs\runtime') -File -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 10)
 
 [pscustomobject]@{
     service = if ($service) {
@@ -44,6 +67,15 @@ $health = try {
             account = $service.StartName
             pid = $service.ProcessId
             imagePath = $service.PathName
+            delayedAutoStart = if ($serviceRegistry) { $serviceRegistry.DelayedAutoStart } else { $null }
+            serviceSidType = if ($serviceRegistry) { $serviceRegistry.ServiceSidType } else { $null }
+            registryPath = $serviceRegistryPath
+        }
+    } else { $null }
+    executable = if (Test-Path -LiteralPath $serverExecutable -PathType Leaf) {
+        [pscustomobject]@{
+            version = (Get-Item -LiteralPath $serverExecutable).VersionInfo.ProductVersion
+            signature = $signature
         }
     } else { $null }
     installRootExists = Test-Path -LiteralPath $installRoot
@@ -52,6 +84,6 @@ $health = try {
     firewall = $firewall
     certificates = $certificates
     health = $health
-    runtimeLogPaths = @(Get-ChildItem -LiteralPath (Join-Path $productRoot 'logs\runtime') -File -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 10 -ExpandProperty FullName)
+    startupDiagnostics = $startupDiagnostics
+    runtimeLogs = @($runtimeLogs | Select-Object FullName, LastWriteTimeUtc)
 } | ConvertTo-Json -Depth 6

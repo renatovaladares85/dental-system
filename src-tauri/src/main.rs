@@ -22,7 +22,7 @@ fn run_main() -> Result<(), &'static str> {
             offline_dental_system_lib::platform::windows_service::run_dispatcher(Arc::new(
                 offline_dental_system_lib::run_as_windows_service,
             ))
-            .map_err(|_| "SERVICE_START_FAILED")?;
+            .map_err(|error| error.code())?;
         }
         Mode::Console(data_directory) => {
             tokio::runtime::Builder::new_multi_thread()
@@ -30,7 +30,7 @@ fn run_main() -> Result<(), &'static str> {
                 .build()
                 .map_err(|_| "RUNTIME_START_FAILED")?
                 .block_on(offline_dental_system_lib::run_console(data_directory))
-                .map_err(|_| "CONSOLE_HOST_FAILED")?;
+                .map_err(|error| offline_dental_system_lib::startup_error_code(error.as_ref()))?;
         }
         Mode::SecurityDiagnostics => {
             let json = offline_dental_system_lib::security_diagnostics_json()

@@ -36,6 +36,33 @@ use uuid::Uuid;
 pub const DEFAULT_ADMIN_PORT: u16 = 8742;
 pub const DEFAULT_LAN_PORT: u16 = 8743;
 
+const STARTUP_ERROR_CODES: &[&str] = &[
+    "CONSOLE_DATA_DIRECTORY_INVALID",
+    "CONSOLE_DATA_DIRECTORY_RESERVED",
+    "HOST_TASK_STOPPED",
+    "INSTANCE_ALREADY_RUNNING",
+    "SERVICE_HOST_STOP_TIMEOUT",
+    "SERVICE_READINESS_FAILED",
+    "SERVICE_READINESS_TIMEOUT",
+    "STARTUP_ADMIN_BIND_FAILED",
+    "STARTUP_DATA_DIRECTORY_FAILED",
+    "STARTUP_DATABASE_FAILED",
+    "STARTUP_HOST_IDENTITY_FAILED",
+    "STARTUP_INSTANCE_LOCK_FAILED",
+    "STARTUP_RUNTIME_FAILED",
+    "STARTUP_SERVICE_READY_CHANNEL_FAILED",
+    "STARTUP_TLS_FAILED",
+];
+
+pub fn startup_error_code(error: &(dyn std::error::Error + Send + Sync + 'static)) -> &'static str {
+    let displayed = error.to_string();
+    STARTUP_ERROR_CODES
+        .iter()
+        .copied()
+        .find(|code| *code == displayed)
+        .unwrap_or("STARTUP_RUNTIME_FAILED")
+}
+
 pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let product_root = default_product_root()?;
     let data_directory = product_root.join("Data");
@@ -89,7 +116,7 @@ pub fn run_as_windows_service(
                 let _ = shutdown_rx.await;
             },
         ))
-        .map_err(|_| PlatformError::new("STARTUP_RUNTIME_FAILED"))
+        .map_err(|error| PlatformError::new(startup_error_code(error.as_ref())))
 }
 
 async fn run_with_paths(
@@ -506,7 +533,24 @@ fn init_tracing(
 mod tests {
     use std::net::{SocketAddr, TcpStream};
 
-    use super::bind_dual_stack;
+    use super::{bind_dual_stack, startup_error_code};
+
+    #[test]
+    fn startup_error_code_preserves_known_sanitized_codes() {
+        let error: Box<dyn std::error::Error + Send + Sync> = "STARTUP_DATABASE_FAILED".into();
+
+        assert_eq!(
+            startup_error_code(error.as_ref()),
+            "STARTUP_DATABASE_FAILED"
+        );
+    }
+
+    #[test]
+    fn startup_error_code_hides_unexpected_error_details() {
+        let error = std::io::Error::other("C:\\sensitive\\database.sqlcipher");
+
+        assert_eq!(startup_error_code(&error), "STARTUP_RUNTIME_FAILED");
+    }
 
     #[test]
     fn lan_listener_accepts_ipv4_and_ipv6_before_mdns_can_be_enabled() {

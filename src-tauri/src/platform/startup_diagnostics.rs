@@ -9,6 +9,7 @@ use serde::Serialize;
 use crate::{
     infrastructure::{ProtectedKeyFile, runtime_security_diagnostics},
     platform::host_identity::HostIdentityManager,
+    platform::network::bind_dual_stack_listener,
 };
 
 const DATABASE_PATH: [&str; 3] = ["Data", "active", "database.sqlcipher"];
@@ -65,7 +66,7 @@ pub fn collect(product_root: Option<&Path>, program_data_available: bool) -> Sta
         .is_some_and(directory_is_not_read_only);
     let instance_lock_available = product_root.is_some_and(instance_lock_available);
     let admin_port_available = port_is_available(8742);
-    let lan_port_available = port_is_available(8743);
+    let lan_port_available = lan_port_is_available(8743);
     let runtime_diagnostics = runtime_security_diagnostics().ok();
     let sqlcipher_version = runtime_diagnostics
         .as_ref()
@@ -218,6 +219,10 @@ fn port_is_available(port: u16) -> bool {
     TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)).is_ok()
 }
 
+fn lan_port_is_available(port: u16) -> bool {
+    bind_dual_stack_listener(port).is_ok()
+}
+
 fn host_identity_state(product_root: &Path) -> &'static str {
     let path = product_root.join("host-identity.json");
     if !path.exists() {
@@ -288,7 +293,7 @@ fn tls_state(product_root: &Path) -> &'static str {
 mod tests {
     use std::{fs, net::TcpListener};
 
-    use super::collect;
+    use super::{collect, lan_port_is_available};
 
     #[test]
     fn diagnostics_do_not_create_a_missing_product_root() {
@@ -332,6 +337,15 @@ mod tests {
                 .iter()
                 .any(|issue| issue.code == "STARTUP_ADMIN_PORT_IN_USE")
         );
+        drop(listener);
+    }
+
+    #[test]
+    fn lan_diagnostic_uses_the_dual_stack_port_reservation() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("reserve IPv4 port");
+        let port = listener.local_addr().expect("listener address").port();
+
+        assert!(!lan_port_is_available(port));
         drop(listener);
     }
 }

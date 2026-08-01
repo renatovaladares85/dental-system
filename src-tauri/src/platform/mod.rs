@@ -10,6 +10,7 @@ mod error;
 pub mod discovery;
 pub mod host_identity;
 pub mod instance_lock;
+pub mod network;
 pub mod pairing;
 pub mod startup_diagnostics;
 pub mod storage_volumes;

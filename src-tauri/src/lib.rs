@@ -26,10 +26,10 @@ use platform::{
     discovery::MdnsRegistration,
     host_identity::HostIdentityManager,
     instance_lock::InstanceGuard,
+    network::bind_dual_stack_listener,
     pairing::PairingManager,
     tls::{TlsIdentityAction, TlsIdentityManager},
 };
-use socket2::{Domain, Protocol, Socket, Type};
 use tokio::{net::TcpListener, sync::watch, task::JoinHandle};
 use uuid::Uuid;
 
@@ -341,7 +341,7 @@ async fn run_lan_supervisor(
         current_tls.private_key_der.to_vec(),
     )
     .await?;
-    let listener = bind_dual_stack(DEFAULT_LAN_PORT)?;
+    let listener = bind_dual_stack_listener(DEFAULT_LAN_PORT)?;
     let lan_address = listener.local_addr()?;
     listener.set_nonblocking(true)?;
     let server = axum_server::from_tcp_rustls(listener, tls_config.clone())?;
@@ -403,19 +403,6 @@ async fn run_lan_supervisor(
             }
         }
     }
-}
-
-fn bind_dual_stack(port: u16) -> std::io::Result<std::net::TcpListener> {
-    let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
-    socket.set_only_v6(false)?;
-    if socket.only_v6()? {
-        return Err(std::io::Error::other(
-            "dual-stack listener could not be enabled",
-        ));
-    }
-    socket.bind(&SocketAddr::from(([0_u16; 8], port)).into())?;
-    socket.listen(128)?;
-    Ok(socket.into())
 }
 
 struct PairingAvailabilityGuard {
@@ -548,7 +535,8 @@ fn init_tracing(
 mod tests {
     use std::net::{SocketAddr, TcpStream};
 
-    use super::{bind_dual_stack, startup_error_code};
+    use super::startup_error_code;
+    use crate::platform::network::bind_dual_stack_listener;
 
     #[test]
     fn startup_error_code_preserves_known_sanitized_codes() {
@@ -569,7 +557,7 @@ mod tests {
 
     #[test]
     fn lan_listener_accepts_ipv4_and_ipv6_before_mdns_can_be_enabled() {
-        let listener = bind_dual_stack(0).expect("dual-stack listener");
+        let listener = bind_dual_stack_listener(0).expect("dual-stack listener");
         let port = listener.local_addr().expect("listener address").port();
         let acceptor = std::thread::spawn(move || {
             for _ in 0..2 {

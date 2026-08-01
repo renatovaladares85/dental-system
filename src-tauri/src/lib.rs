@@ -10,7 +10,7 @@ use std::{
     future::Future,
     net::SocketAddr,
     path::{Path, PathBuf},
-    sync::{Arc, Once, mpsc::Receiver},
+    sync::{Arc, Once, mpsc::{Receiver, SyncSender}},
     time::Duration,
 };
 
@@ -36,7 +36,7 @@ pub const DEFAULT_LAN_PORT: u16 = 8743;
 pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let product_root = default_product_root()?;
     let data_directory = product_root.join("Data");
-    run_with_paths(product_root, data_directory, async {
+    run_with_paths(product_root, data_directory, "service", None, async {
         let _ = tokio::signal::ctrl_c().await;
     })
     .await
@@ -46,7 +46,7 @@ pub async fn run_console(
     data_directory: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (product_root, data_directory) = validate_console_data_directory(&data_directory)?;
-    run_with_paths(product_root, data_directory, async {
+    run_with_paths(product_root, data_directory, "console", None, async {
         let _ = tokio::signal::ctrl_c().await;
     })
     .await
@@ -57,7 +57,10 @@ pub fn security_diagnostics_json() -> Result<String, Box<dyn std::error::Error +
     Ok(serde_json::to_string(&diagnostics)?)
 }
 
-pub fn run_as_windows_service(shutdown: Receiver<()>) -> PlatformResult<()> {
+pub fn run_as_windows_service(
+    readiness: SyncSender<()>,
+    shutdown: Receiver<()>,
+) -> PlatformResult<()> {
     let product_root =
         default_product_root().map_err(|_| PlatformError::new("SERVICE_DATA_ROOT_UNAVAILABLE"))?;
     let data_directory = product_root.join("Data");
@@ -74,29 +77,45 @@ pub fn run_as_windows_service(shutdown: Receiver<()>) -> PlatformResult<()> {
         .build()
         .map_err(|_| PlatformError::new("SERVICE_RUNTIME_FAILED"))?;
     runtime
-        .block_on(run_with_paths(product_root, data_directory, async move {
-            let _ = shutdown_rx.await;
-        }))
-        .map_err(|_| PlatformError::new("SERVICE_HOST_FAILED"))
+        .block_on(run_with_paths(
+            product_root,
+            data_directory,
+            "service",
+            Some(readiness),
+            async move {
+                let _ = shutdown_rx.await;
+            },
+        ))
+        .map_err(|_| PlatformError::new("STARTUP_RUNTIME_FAILED"))
 }
 
 async fn run_with_paths(
     product_root: PathBuf,
     data_directory: PathBuf,
+    mode: &'static str,
+    readiness: Option<SyncSender<()>>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    std::fs::create_dir_all(&data_directory)?;
-    init_tracing(&product_root)?;
+    let run_id = Uuid::now_v7();
+    init_tracing(&product_root, run_id, mode)?;
+    tracing::info!(event = "PRODUCT_ROOT_RESOLVED", run_id = %run_id, mode);
+    std::fs::create_dir_all(&data_directory).map_err(|_| startup_failed("STARTUP_DATA_DIRECTORY_FAILED"))?;
+    tracing::info!(event = "DATA_DIRECTORY_READY", run_id = %run_id);
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let _instance = InstanceGuard::acquire(&product_root)?;
-    let host = HostIdentityManager::load_or_create(&product_root)?;
-    let installation_id = Uuid::parse_str(&host.installation_id)?;
+    let _instance = InstanceGuard::acquire(&product_root)
+        .map_err(|_| startup_failed("STARTUP_INSTANCE_LOCK_FAILED"))?;
+    tracing::info!(event = "INSTANCE_LOCK_ACQUIRED", run_id = %run_id);
+    let host = HostIdentityManager::load_or_create(&product_root)
+        .map_err(|_| startup_failed("STARTUP_HOST_IDENTITY_FAILED"))?;
+    tracing::info!(event = "HOST_IDENTITY_READY", run_id = %run_id);
+    let installation_id = Uuid::parse_str(&host.installation_id)
+        .map_err(|_| startup_failed("STARTUP_HOST_IDENTITY_FAILED"))?;
 
     let tls_manager = Arc::new(TlsIdentityManager::new(
         &product_root,
         PlatformKeyProtector::new(),
-    )?);
+    ).map_err(|_| startup_failed("STARTUP_TLS_FAILED"))?);
     let pairing_manager = Arc::new(PairingManager::new());
     let pairing = Arc::new(PlatformPairingAdapter::new(pairing_manager));
     match tls_manager.ensure_identity(&host.installation_id, &host.hostname, Utc::now()) {
@@ -105,25 +124,28 @@ async fn run_with_paths(
                 host.hostname.clone(),
                 identity.ca_fingerprint_sha256,
                 identity.ca_certificate_der,
-            )?;
+            ).map_err(|_| startup_failed("STARTUP_TLS_FAILED"))?;
+            tracing::info!(event = "TLS_IDENTITY_READY", run_id = %run_id);
         }
-        Err(error) => {
-            tracing::error!(
-                code = error.code(),
-                "TLS identity is not available; LAN remains closed"
-            );
+        Err(_) => {
+            tracing::error!(event = "TLS_IDENTITY_UNAVAILABLE", code = "STARTUP_TLS_FAILED", run_id = %run_id);
         }
     }
 
     let setup =
         application::SetupService::for_installation(data_directory.clone(), installation_id);
     let volumes = Arc::new(PlatformStorageVolumeAdapter::new(data_directory));
-    let state = HttpState::new(setup, volumes)?.with_pairing(pairing.clone());
+    let state = HttpState::new(setup, volumes)
+        .map_err(|_| startup_failed("STARTUP_DATABASE_FAILED"))?
+        .with_pairing(pairing.clone());
+    tracing::info!(event = "DATABASE_STATE_READ", run_id = %run_id);
     let ready = state.ready_receiver();
 
     let admin_address = SocketAddr::from(([127, 0, 0, 1], DEFAULT_ADMIN_PORT));
-    let admin_listener = TcpListener::bind(admin_address).await?;
-    tracing::info!(address = %admin_address, "administrative listener ready");
+    let admin_listener = TcpListener::bind(admin_address)
+        .await
+        .map_err(|_| startup_failed("STARTUP_ADMIN_BIND_FAILED"))?;
+    tracing::info!(event = "ADMIN_LISTENER_BOUND", address = %admin_address, run_id = %run_id);
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (failure_tx, mut failure_rx) = tokio::sync::mpsc::channel::<&'static str>(2);
@@ -143,8 +165,17 @@ async fn run_with_paths(
         host.hostname,
     );
 
+    if let Some(readiness) = readiness {
+        readiness
+            .send(())
+            .map_err(|_| startup_failed("STARTUP_SERVICE_READY_CHANNEL_FAILED"))?;
+    }
+    tracing::info!(event = "SERVICE_READY", run_id = %run_id);
+
     tokio::select! {
-        _ = shutdown => {}
+        _ = shutdown => {
+            tracing::info!(event = "SHUTDOWN_REQUESTED", run_id = %run_id);
+        }
         failure = failure_rx.recv() => {
             let code = failure.unwrap_or("HOST_TASK_STOPPED");
             tracing::error!(code, "server task stopped unexpectedly");
@@ -156,7 +187,13 @@ async fn run_with_paths(
 
     shutdown_tx.send_replace(true);
     wait_for_tasks(admin_task, lan_task).await;
+    tracing::info!(event = "SHUTDOWN_COMPLETED", run_id = %run_id);
     Ok(())
+}
+
+fn startup_failed(code: &'static str) -> Box<dyn std::error::Error + Send + Sync> {
+    tracing::error!(event = "STARTUP_FAILED", code);
+    code.into()
 }
 
 fn spawn_admin(
@@ -275,7 +312,7 @@ async fn run_lan_supervisor(
         installation_id,
     )?;
     let availability = PairingAvailabilityGuard::activate(pairing.clone());
-    tracing::info!(address = %lan_address, service = discovery.fullname(), "LAN listener ready");
+    tracing::info!(event = "LAN_LISTENER_BOUND", address = %lan_address, service = discovery.fullname());
 
     let handle = axum_server::Handle::new();
     let serve = server.handle(handle.clone()).serve(router);
@@ -424,11 +461,15 @@ fn validate_console_data_directory(
     Ok((product_root, data_directory))
 }
 
-fn init_tracing(product_root: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn init_tracing(
+    product_root: &Path,
+    run_id: Uuid,
+    mode: &'static str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use tracing_subscriber::fmt::writer::MakeWriterExt as _;
 
     static PANIC_HOOK: Once = Once::new();
-    let log_directory = product_root.join("Logs");
+    let log_directory = product_root.join("logs").join("runtime");
     std::fs::create_dir_all(&log_directory)?;
     let file_appender = tracing_appender::rolling::RollingFileAppender::builder()
         .rotation(tracing_appender::rolling::Rotation::DAILY)
@@ -442,6 +483,7 @@ fn init_tracing(product_root: &Path) -> Result<(), Box<dyn std::error::Error + S
         .with_env_filter(filter)
         .json()
         .flatten_event(true)
+        .with_current_span(true)
         .with_ansi(false)
         .with_target(false)
         .with_writer(std::io::stderr.and(file_appender))
@@ -451,7 +493,7 @@ fn init_tracing(product_root: &Path) -> Result<(), Box<dyn std::error::Error + S
             tracing::error!(code = "UNHANDLED_PANIC", "an internal task panicked");
         }));
     });
-    tracing::info!(event = "SERVER_LOGGING_READY", retention_files = 30);
+    tracing::info!(event = "PROCESS_STARTED", run_id = %run_id, mode, version = env!("CARGO_PKG_VERSION"), retention_files = 30);
     Ok(())
 }
 

@@ -1,4 +1,4 @@
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, SyncSender};
 
 #[cfg(not(windows))]
 use std::sync::Arc;
@@ -12,15 +12,15 @@ pub const SERVICE_NAME: &str = "OfflineDentalSystem";
 /// Adapter implemented by the HTTP host. `run` must block until shutdown is
 /// requested and all listeners/workers have stopped.
 pub trait ServiceHost: Send + Sync + 'static {
-    fn run(&self, shutdown: Receiver<()>) -> PlatformResult<()>;
+    fn run(&self, readiness: SyncSender<()>, shutdown: Receiver<()>) -> PlatformResult<()>;
 }
 
 impl<F> ServiceHost for F
 where
-    F: Fn(Receiver<()>) -> PlatformResult<()> + Send + Sync + 'static,
+    F: Fn(SyncSender<()>, Receiver<()>) -> PlatformResult<()> + Send + Sync + 'static,
 {
-    fn run(&self, shutdown: Receiver<()>) -> PlatformResult<()> {
-        self(shutdown)
+    fn run(&self, readiness: SyncSender<()>, shutdown: Receiver<()>) -> PlatformResult<()> {
+        self(readiness, shutdown)
     }
 }
 
@@ -29,7 +29,7 @@ mod windows {
     use std::{
         ffi::OsString,
         sync::{Arc, OnceLock, mpsc},
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     use windows_service::{
@@ -101,6 +101,46 @@ mod windows {
                 process_id: None,
             })
             .map_err(|_| PlatformError::unavailable())?;
+
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        std::thread::Builder::new()
+            .name("ods-service-host".to_owned())
+            .spawn(move || {
+                let _ = result_tx.send(host.run(ready_tx, shutdown_rx));
+            })
+            .map_err(|_| PlatformError::new("SERVICE_HOST_THREAD_FAILED"))?;
+
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut checkpoint = 1;
+        loop {
+            if let Ok(result) = result_rx.try_recv() {
+                return stop_service(&status, result);
+            }
+            match ready_rx.recv_timeout(Duration::from_secs(1)) {
+                Ok(()) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) if Instant::now() < deadline => {
+                    checkpoint += 1;
+                    status
+                        .set_service_status(ServiceStatus {
+                            service_type: SERVICE_TYPE,
+                            current_state: ServiceState::StartPending,
+                            controls_accepted: ServiceControlAccept::empty(),
+                            exit_code: ServiceExitCode::Win32(0),
+                            checkpoint,
+                            wait_hint: Duration::from_secs(20),
+                            process_id: None,
+                        })
+                        .map_err(|_| PlatformError::unavailable())?;
+                }
+                Err(_) => {
+                    let result = result_rx
+                        .recv()
+                        .unwrap_or_else(|_| Err(PlatformError::new("SERVICE_READINESS_FAILED")));
+                    return stop_service(&status, result);
+                }
+            }
+        }
         status
             .set_service_status(ServiceStatus {
                 service_type: SERVICE_TYPE,
@@ -113,7 +153,13 @@ mod windows {
             })
             .map_err(|_| PlatformError::unavailable())?;
 
-        let result = host.run(shutdown_rx);
+        let result = result_rx
+            .recv()
+            .unwrap_or_else(|_| Err(PlatformError::new("SERVICE_HOST_STOPPED")));
+        stop_service(&status, result)
+    }
+
+    fn stop_service(status: &ServiceStatusHandle, result: PlatformResult<()>) -> PlatformResult<()> {
         let exit_code = if result.is_ok() {
             ServiceExitCode::Win32(0)
         } else {

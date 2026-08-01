@@ -6,7 +6,8 @@ Set-StrictMode -Version Latest
 
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $targets = @(
-    '.local-data',
+    '.local-data\dev-host',
+    '.local-data\logs',
     'dist',
     'coverage',
     'src-tauri\target',
@@ -14,7 +15,7 @@ $targets = @(
 ) | ForEach-Object { Join-Path $repositoryRoot $_ }
 
 if (-not $Force) {
-    $answer = Read-Host "Remover apenas outputs locais de desenvolvimento? Digite LIMPAR para confirmar"
+    $answer = Read-Host "Remover apenas outputs locais de desenvolvimento conhecidos? Digite LIMPAR para confirmar"
     if ($answer -cne 'LIMPAR') { throw 'Limpeza cancelada; nenhum arquivo foi removido.' }
 }
 

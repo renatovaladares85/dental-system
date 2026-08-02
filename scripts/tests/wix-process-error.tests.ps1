@@ -86,7 +86,7 @@ try {
         throw 'Diagnóstico registrou informação sensível não fornecida ao processo.'
     }
 
-    $logMatches = [regex]::Matches($failureMessage, '(?m)^[A-Z]:\\.*\.(?:stdout|stderr)\.log$')
+    $logMatches = [regex]::Matches($failureMessage, '(?m)^[A-Z]:\\.*\.(?:stdout|stderr)\.log\r?$')
     if ($logMatches.Count -ne 2) { throw 'Diagnóstico não informou os dois logs preservados.' }
     foreach ($match in $logMatches) {
         $logPath = $match.Value.Trim()

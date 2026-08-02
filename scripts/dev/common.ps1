@@ -23,28 +23,41 @@ function Update-OdsProcessPath {
     $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     $pathSeparator = [IO.Path]::PathSeparator
-    $env:Path = @($machinePath, $userPath, $env:Path) |
-        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-        ForEach-Object { $_ -split [regex]::Escape([string]$pathSeparator) } |
-        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-        ForEach-Object { $_.Trim() } |
-        Select-Object -Unique |
-        Join-String -Separator ';'
+    $pathEntries = [Collections.Generic.List[string]]::new()
+    $seenPathEntries = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($pathValue in @($machinePath, $userPath, $env:Path)) {
+        if ([string]::IsNullOrWhiteSpace($pathValue)) { continue }
+        foreach ($entry in $pathValue.Split($pathSeparator, [StringSplitOptions]::RemoveEmptyEntries)) {
+            $trimmedEntry = $entry.Trim()
+            if ($trimmedEntry -and $seenPathEntries.Add($trimmedEntry)) {
+                $pathEntries.Add($trimmedEntry)
+            }
+        }
+    }
+    $env:Path = $pathEntries -join [string]$pathSeparator
 
     $machinePathExt = [Environment]::GetEnvironmentVariable('PATHEXT', 'Machine')
     $userPathExt = [Environment]::GetEnvironmentVariable('PATHEXT', 'User')
-    $env:PATHEXT = @($machinePathExt, $userPathExt, $env:PATHEXT, '.COM;.EXE;.BAT;.CMD') |
-        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-        Select-Object -Unique |
-        Join-String -Separator ';'
+    $pathExtEntries = [Collections.Generic.List[string]]::new()
+    $seenPathExtEntries = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($pathExtValue in @($machinePathExt, $userPathExt, $env:PATHEXT, '.COM;.EXE;.BAT;.CMD')) {
+        if ([string]::IsNullOrWhiteSpace($pathExtValue)) { continue }
+        foreach ($entry in $pathExtValue.Split($pathSeparator, [StringSplitOptions]::RemoveEmptyEntries)) {
+            $trimmedEntry = $entry.Trim()
+            if ($trimmedEntry -and $seenPathExtEntries.Add($trimmedEntry)) {
+                $pathExtEntries.Add($trimmedEntry)
+            }
+        }
+    }
+    $env:PATHEXT = $pathExtEntries -join [string]$pathSeparator
 }
 
 function Test-OdsVisualStudioEnvironment {
     foreach ($command in 'cl.exe', 'link.exe', 'lib.exe', 'rc.exe') {
         if (-not (Test-OdsCommand $command)) { return $false }
     }
-    if ($env:VSCMD_ARG_TGT_ARCH -and $env:VSCMD_ARG_TGT_ARCH -ne 'x64') { return $false }
-    if ($env:VSCMD_ARG_HOST_ARCH -and $env:VSCMD_ARG_HOST_ARCH -ne 'x64') { return $false }
+    if ($env:VSCMD_ARG_TGT_ARCH -cne 'x64') { return $false }
+    if ($env:VSCMD_ARG_HOST_ARCH -cne 'x64') { return $false }
     return $true
 }
 

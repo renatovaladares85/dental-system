@@ -151,18 +151,28 @@ function Invoke-OdsNative {
     return [pscustomobject]@{ ExitCode = $exitCode; StdOut = $stdout; StdErr = $stderr }
 }
 
-function Invoke-OdsNpm {
-    param(
-        [Parameter(ValueFromRemainingArguments, Position = 0)][string[]]$Arguments
-    )
-
+function Get-OdsNpmCommand {
+    $nodeCommand = Get-Command 'node.exe' -ErrorAction Stop
     $npmCommand = Get-Command 'npm.cmd' -ErrorAction Stop
     $npmDirectory = Split-Path -Parent $npmCommand.Source
     $npmCli = Join-Path $npmDirectory 'node_modules\npm\bin\npm-cli.js'
     if (-not (Test-Path -LiteralPath $npmCli -PathType Leaf)) {
         throw "Não foi possível localizar npm-cli.js a partir de '$($npmCommand.Source)'."
     }
-    Invoke-OdsNative 'node.exe' $npmCli @Arguments
+    return [pscustomobject]@{
+        NodePath = $nodeCommand.Source
+        NpmCommandPath = $npmCommand.Source
+        NpmCliPath = $npmCli
+    }
+}
+
+function Invoke-OdsNpm {
+    param(
+        [Parameter(ValueFromRemainingArguments, Position = 0)][string[]]$Arguments
+    )
+
+    $npm = Get-OdsNpmCommand
+    return Invoke-OdsNative $npm.NodePath $npm.NpmCliPath @Arguments
 }
 
 function ConvertTo-OdsWindowsCommandLine([string[]]$Arguments) {

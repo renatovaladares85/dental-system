@@ -16,7 +16,7 @@
                   Schedule="afterInstallInitialize" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
     <Property Id="TestPackage" Value="$(var.TestPackage)" />
-    <Launch Condition="NOT TestPackage OR ODS_TEST_INSTALL = &quot;1&quot;"
+    <Launch Condition="TestPackage = &quot;false&quot; OR ODS_TEST_INSTALL = &quot;1&quot;"
             Message="Este pacote é exclusivo para validação controlada." />
 
     <Feature Id="ProductFeature" Title="Offline Dental System" Level="1">

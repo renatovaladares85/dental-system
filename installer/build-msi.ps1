@@ -4,7 +4,9 @@ param(
     [switch]$TestInstallationPackage,
     [string]$ServerExecutable,
     [string]$ProductLicenseFile,
-    [string]$OutputDirectory
+    [string]$OutputDirectory,
+    [string]$WixExecutable,
+    [string]$WixExtensionRoot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -30,6 +32,9 @@ $configureScript = Join-Path $installerRoot 'configure-host-trust.ps1'
 $applicationIcon = Join-Path $repositoryRoot 'src-tauri\icons\icon.ico'
 $minimumSqlCipher = [version]'4.17.0'
 $wixVersion = '4.0.6'
+$wixToolsRoot = Join-Path $repositoryRoot '.local-data\tools'
+$wixLogRoot = Join-Path $repositoryRoot '.local-data\logs\wix'
+. (Join-Path $repositoryRoot 'scripts\tools\wix-tooling.ps1')
 
 if ($ValidationOnly -and $TestInstallationPackage) {
     throw 'ValidationOnly e TestInstallationPackage são mutuamente exclusivos.'
@@ -131,60 +136,35 @@ if (-not $ValidationOnly -and -not $TestInstallationPackage -and
     throw 'Distribuição bloqueada: o marcador de validação não é uma licença de produto.'
 }
 
-$wix = Get-Command 'wix.exe' -ErrorAction SilentlyContinue
-if ($null -eq $wix -and $env:ODS_WIX_EXE) {
-    $wixCandidate = [IO.Path]::GetFullPath($env:ODS_WIX_EXE)
-    if (-not (Test-Path -LiteralPath $wixCandidate -PathType Leaf)) {
-        throw "ODS_WIX_EXE não aponta para um arquivo existente: '$wixCandidate'."
-    }
-    $wix = Get-Command $wixCandidate -ErrorAction Stop
-}
-if ($null -eq $wix) {
-    throw "WiX Toolset $wixVersion ausente. Instale-o globalmente ou defina ODS_WIX_EXE para uma cópia portátil fixada."
+$resolvedWix = Resolve-OdsWixExecutable `
+    -WixExecutable $WixExecutable `
+    -ToolsRoot $wixToolsRoot `
+    -RepositoryRoot $repositoryRoot `
+    -LogRoot $wixLogRoot
+$resolvedExtensions = Resolve-OdsWixExtensions `
+    -WixExtensionRoot $WixExtensionRoot `
+    -ToolsRoot $wixToolsRoot `
+    -RepositoryRoot $repositoryRoot
+
+function Invoke-Wix {
+    param(
+        [Parameter(Mandatory)][string]$Stage,
+        [Parameter(Mandatory)][string[]]$Arguments
+    )
+
+    $result = Invoke-OdsWixProcess `
+        -Stage $Stage `
+        -Executable $resolvedWix `
+        -Arguments $Arguments `
+        -WorkingDirectory $repositoryRoot `
+        -LogRoot $wixLogRoot `
+        -ExpectedVersion $wixVersion
+    return $result.StdOut
 }
 
-function ConvertTo-WindowsCommandLine([string[]]$Arguments) {
-    return ($Arguments | ForEach-Object {
-        $value = [string]$_
-        if ($value.Length -eq 0) { return '""' }
-        if ($value -notmatch '[\s"]') { return $value }
-        $escaped = [regex]::Replace($value, '(\\*)"', '$1$1\\"')
-        $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
-        return '"' + $escaped + '"'
-    }) -join ' '
-}
-
-function Invoke-Wix([string[]]$Arguments) {
-    $stdout = [IO.Path]::GetTempFileName()
-    $stderr = [IO.Path]::GetTempFileName()
-    try {
-        $process = Start-Process -FilePath $wix.Source `
-            -ArgumentList (ConvertTo-WindowsCommandLine $Arguments) `
-            -RedirectStandardOutput $stdout `
-            -RedirectStandardError $stderr `
-            -Wait -PassThru -NoNewWindow
-        $output = Get-Content -LiteralPath $stdout -Raw
-        $errorOutput = Get-Content -LiteralPath $stderr -Raw
-        if ($output) { Write-Host $output.TrimEnd() }
-        if ($errorOutput) { Write-Error $errorOutput.TrimEnd() -ErrorAction Continue }
-        if ($process.ExitCode -ne 0) {
-            throw "WiX falhou com código $($process.ExitCode)."
-        }
-        return $output
-    } finally {
-        Remove-Item -LiteralPath $stdout, $stderr -Force -ErrorAction SilentlyContinue
-    }
-}
-
-$detectedWix = (Invoke-Wix @('--version')).Trim()
+$detectedWix = (Invoke-Wix -Stage 'version' -Arguments @('--version')).Trim()
 if ($detectedWix -notmatch '^4\.0\.6(?:\+|$)') {
     throw "WiX $wixVersion é obrigatório; detectado: $detectedWix."
-}
-
-foreach ($extension in @('WixToolset.Firewall.wixext', 'WixToolset.Util.wixext')) {
-    # `extension add` is idempotent and also handles an initially empty global
-    # cache (for which WiX 4 returns a non-zero status from `extension list`).
-    $null = Invoke-Wix @('extension', 'add', '-g', "$extension/$wixVersion")
 }
 
 function Find-SignTool {
@@ -257,22 +237,22 @@ $temporaryDirectory = Join-Path ([IO.Path]::GetTempPath()) ("offline-dental-msi-
 New-Item -ItemType Directory -Path $temporaryDirectory | Out-Null
 $temporaryMsi = Join-Path $temporaryDirectory "OfflineDentalSystem-$productVersion-x64.msi"
 try {
-    $null = Invoke-Wix @(
+    $null = Invoke-Wix -Stage 'build' -Arguments @(
         'build', $packageSource,
         '-arch', 'x64',
-        '-ext', "WixToolset.Firewall.wixext/$wixVersion",
-        '-ext', "WixToolset.Util.wixext/$wixVersion",
+        '-ext', $resolvedExtensions.FirewallExtension,
+        '-ext', $resolvedExtensions.UtilExtension,
         '-d', "ProductVersion=$productVersion",
         '-d', "ServerExecutable=$ServerExecutable",
         '-d', "ProductLicenseFile=$ProductLicenseFile",
         '-d', "ConfigureServiceScript=$configureServiceScript",
         '-d', "ConfigureHostTrustScript=$configureScript",
         '-d', "ApplicationIcon=$applicationIcon",
-        '-d', ("TestPackage=" + $(if ($TestInstallationPackage) { 'true' } else { '' })),
+        '-d', ("TestPackage=" + $(if ($TestInstallationPackage) { 'true' } else { 'false' })),
         '-o', $temporaryMsi
     )
 
-    $null = Invoke-Wix @('msi', 'validate', $temporaryMsi)
+    $null = Invoke-Wix -Stage 'msi-validate' -Arguments @('msi', 'validate', $temporaryMsi)
 
     if ($ValidationOnly) {
         Write-Host 'SUCESSO: fonte WiX compilada/validada; MSI temporário será removido (não distribuível).' -ForegroundColor Green

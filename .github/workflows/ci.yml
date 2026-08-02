@@ -123,12 +123,45 @@ jobs:
       - name: Analisar segurança dos scripts PowerShell
         shell: pwsh
         run: |
-          Install-Module PSScriptAnalyzer -RequiredVersion 1.24.0 -Scope CurrentUser -Force
-          $issues = @(Invoke-ScriptAnalyzer -Path scripts, installer -Settings PSScriptAnalyzerSettings.psd1)
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          Install-Module `
+            PSScriptAnalyzer `
+            -RequiredVersion 1.24.0 `
+            -Scope CurrentUser `
+            -Force
+
+          $analysisPaths = @(
+            'scripts'
+            'installer'
+          )
+
+          $issues = @(
+            foreach ($analysisPath in $analysisPaths) {
+              Invoke-ScriptAnalyzer `
+                -Path $analysisPath `
+                -Recurse `
+                -Settings '.\PSScriptAnalyzerSettings.psd1' `
+                -ErrorAction Stop
+            }
+          )
+
           if ($issues.Count -gt 0) {
-            $issues | Format-Table -AutoSize
-            throw 'PSScriptAnalyzer encontrou problemas nos scripts Windows.'
+            $issues |
+              Sort-Object ScriptName, Line, RuleName |
+              Format-Table `
+                RuleName,
+                Severity,
+                ScriptName,
+                Line,
+                Message `
+                -AutoSize
+
+            throw "PSScriptAnalyzer encontrou $($issues.Count) ocorrência(s)."
           }
+
+          Write-Host 'SUCESSO: PSScriptAnalyzer aprovado.' -ForegroundColor Green
 
       - name: Instalar toolchain fixada
         shell: pwsh

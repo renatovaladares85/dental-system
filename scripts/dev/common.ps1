@@ -109,6 +109,7 @@ function Invoke-OdsNative {
     param(
         [Parameter(Mandatory, Position = 0)][string]$FilePath,
         [int[]]$AcceptedExitCodes = @(0),
+        [switch]$SuppressOutput,
         [Parameter(ValueFromRemainingArguments, Position = 1)][string[]]$Arguments
     )
 
@@ -143,8 +144,10 @@ function Invoke-OdsNative {
         $process.Dispose()
     }
 
-    if ($stdout) { Write-Host $stdout.TrimEnd() }
-    if ($stderr) { [Console]::Error.WriteLine($stderr.TrimEnd()) }
+    if (-not $SuppressOutput) {
+        if ($stdout) { Write-Host $stdout.TrimEnd() }
+        if ($stderr) { [Console]::Error.WriteLine($stderr.TrimEnd()) }
+    }
     if ($exitCode -notin $AcceptedExitCodes) {
         throw "O comando '$FilePath' falhou com código $exitCode."
     }

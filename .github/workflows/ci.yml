@@ -154,6 +154,14 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
+      - name: Testar resolução e bootstrap local do WiX
+        shell: pwsh
+        run: .\scripts\tests\wix-resolution.tests.ps1
+
+      - name: Testar diagnósticos de processos WiX
+        shell: pwsh
+        run: .\scripts\tests\wix-process-error.tests.ps1
+
       - name: Compilar SPA para incorporação no binário
         run: |
           npm ci --include=dev
@@ -256,9 +264,11 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or -not $securityDiagnostics) { throw 'Security diagnostics falhou.' }
           $startupDiagnostics = & $executable --startup-diagnostics --json
           if ($LASTEXITCODE -ne 0 -or -not $startupDiagnostics) { throw 'Startup diagnostics falhou.' }
-          dotnet tool install --global wix --version 4.0.6
-          $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
-          .\installer\build-msi.ps1 -ValidationOnly
+          $wixTools = .\scripts\tools\prepare-wix.ps1
+          .\installer\build-msi.ps1 `
+            -ValidationOnly `
+            -WixExecutable $wixTools.WixExecutable `
+            -WixExtensionRoot $wixTools.ExtensionRoot
           $leftovers = @(Get-ChildItem -Path . -Recurse -File -Include *.msi,*.partial -ErrorAction SilentlyContinue)
           if ($leftovers.Count -gt 0) { throw 'ValidationOnly deixou artefatos de instalador no workspace.' }
           if (Test-Path -LiteralPath '.\artifacts\installer') { throw 'ValidationOnly criou diretório de distribuição.' }

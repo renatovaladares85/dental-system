@@ -119,12 +119,18 @@ function Invoke-OdsNative {
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
+    $utf8 = [Text.UTF8Encoding]::new($false)
+    $startInfo.StandardOutputEncoding = $utf8
+    $startInfo.StandardErrorEncoding = $utf8
     foreach ($argument in $Arguments) {
         [void]$startInfo.ArgumentList.Add($argument)
     }
 
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
+    $stdout = ''
+    $stderr = ''
+    $exitCode = $null
     try {
         if (-not $process.Start()) { throw "Não foi possível iniciar '$FilePath'." }
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
@@ -138,7 +144,7 @@ function Invoke-OdsNative {
     }
 
     if ($stdout) { Write-Host $stdout.TrimEnd() }
-    if ($stderr) { Write-Error $stderr.TrimEnd() -ErrorAction Continue }
+    if ($stderr) { [Console]::Error.WriteLine($stderr.TrimEnd()) }
     if ($exitCode -notin $AcceptedExitCodes) {
         throw "O comando '$FilePath' falhou com código $exitCode."
     }

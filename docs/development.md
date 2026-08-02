@@ -148,6 +148,34 @@ compila e valida o MSI com fixture temporário, sem assinar nem publicar. A dist
 exige executável e MSI assinados, com timestamp válido, antes de produzir assets de
 release. Scripts ZIP legados não são caminho suportado.
 
+O tooling do instalador é isolado e fixado em WiX `4.0.6`,
+`WixToolset.Firewall.wixext 4.0.6` e `WixToolset.Util.wixext 4.0.6`. Não é
+necessária instalação global nem elevação. O primeiro provisionamento exige rede
+para baixar os pacotes oficiais do NuGet; execuções posteriores usam apenas os
+arquivos locais:
+
+```powershell
+$wixTools = .\scripts\tools\prepare-wix.ps1
+
+.\installer\build-msi.ps1 `
+    -ValidationOnly `
+    -WixExecutable $wixTools.WixExecutable `
+    -WixExtensionRoot $wixTools.ExtensionRoot
+```
+
+O CLI fica em `.local-data\tools\wix`, e as extensões em
+`.local-data\tools\wix-extensions`. Downloads, staging, backups recuperáveis e
+logs de falha ficam respectivamente em `.local-data\downloads`,
+`.local-data\staging`, `.local-data\backups\tools` e
+`.local-data\logs\wix`. Uma falha informa etapa, executável, comando, código,
+stdout, stderr e caminhos dos logs. Diretórios incompletos são movidos para o
+backup, nunca sobrescritos.
+
+Para limpar o ambiente local, pare o host e mova a pasta `.local-data` completa
+para um backup fora do repositório. Depois execute novamente o bootstrap; não
+apague arquivos versionados nem use `git clean`. `ValidationOnly` compila e
+valida um MSI temporário, mas não produz pacote distribuível.
+
 Para uma VM Windows descartável existe `installer/build-msi.ps1 -TestInstallationPackage`.
 Ele gera somente `artifacts/test-installer/*-TEST-ONLY-x64.msi`, sem assinatura de
 produção. Sua instalação exige `ODS_TEST_INSTALL=1`; nunca é artefato de release.

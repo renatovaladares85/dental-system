@@ -9,9 +9,52 @@ suportado; scripts ZIP e bootstrapper não fazem parte da validação.
 - build Rust release concluído com assets reais incorporados;
 - `--security-diagnostics --json` informa SQLCipher `>= 4.17.0` e
   `distributionReady: true`;
-- `installer/build-msi.ps1 -ValidationOnly` conclui sem arquivo ignorado;
+- WiX `4.0.6` e as extensões `WixToolset.Firewall.wixext 4.0.6` e
+  `WixToolset.Util.wixext 4.0.6` estão provisionados localmente;
+- o bootstrap é executado sem elevação e a primeira execução requer acesso ao
+  NuGet oficial:
+
+  ```powershell
+  $wixTools = .\scripts\tools\prepare-wix.ps1
+  ```
+
+- validações posteriores reutilizam o CLI e as DLLs locais, sem cache global e
+  sem rede durante o build:
+
+  ```powershell
+  .\installer\build-msi.ps1 `
+      -ValidationOnly `
+      -WixExecutable $wixTools.WixExecutable `
+      -WixExtensionRoot $wixTools.ExtensionRoot
+  ```
+
+- `ValidationOnly` conclui sem `.msi`, `.partial`, diretório de distribuição ou
+  mudança no working tree;
 - em distribuição, o executável e o MSI possuem Authenticode, certificado
   esperado e timestamp válido.
+
+## Tooling WiX isolado
+
+O bootstrap não instala ferramentas globalmente. Os arquivos ficam sob:
+
+```text
+.local-data\tools\wix\4.0.6\
+.local-data\tools\wix-extensions\<pacote>\4.0.6\
+.local-data\downloads\
+.local-data\staging\
+.local-data\backups\tools\
+.local-data\logs\wix\
+```
+
+Diretórios incompletos são movidos para `.local-data\backups\tools` com nome
+único; não os apague antes de concluir o diagnóstico. Falhas WiX preservam
+stdout e stderr em `.local-data\logs\wix`, junto com etapa, comando e código de
+saída exibidos no console. Logs de execuções bem-sucedidas são removidos.
+
+Para reprovisionar manualmente, pare o host e mova `.local-data` integralmente
+para um local de backup fora do repositório antes de repetir o bootstrap. Não
+remova arquivos versionados nem use limpeza ampla do Git. `ValidationOnly` não
+gera um MSI distribuível.
 
 ## Serviço e dados
 

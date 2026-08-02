@@ -41,8 +41,16 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
+      - name: Testar resolução do npm vinculado ao Node
+        shell: pwsh
+        run: .\scripts\tests\npm-resolution.tests.ps1
+
+      - name: Testar encoding de processos nativos
+        shell: pwsh
+        run: .\scripts\tests\native-process-encoding.tests.ps1
+
       - name: Instalar dependências do lockfile
-        run: npm ci
+        run: npm ci --include=dev
 
       - name: Verificar formatação
         run: npm run format:check
@@ -63,7 +71,8 @@ jobs:
         run: npm run verify:pwa
 
       - name: Auditar dependências npm
-        run: npm audit --audit-level=high
+        shell: pwsh
+        run: .\scripts\diagnostics\npm-audit.ps1
 
       - name: Inventariar licenças npm
         shell: pwsh
@@ -147,7 +156,7 @@ jobs:
 
       - name: Compilar SPA para incorporação no binário
         run: |
-          npm ci
+          npm ci --include=dev
           npm run build
 
       - name: Verificar lockfile Cargo

@@ -231,7 +231,7 @@ using System;
 using System.Runtime.InteropServices;
 
 public static class OdsCommandLineParser {
-    [DllImport("shell32.dll", SetLastError = true)]
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
     private static extern IntPtr CommandLineToArgvW(string commandLine, out int argumentCount);
 
     [DllImport("kernel32.dll", SetLastError = true)]

@@ -13,6 +13,12 @@ if (-not (Test-OdsDevelopmentHostArguments -ActualArguments $valid -ExpectedExec
     throw 'Argumentos válidos do host foram recusados.'
 }
 
+$commandLine = ConvertTo-OdsWindowsCommandLine $valid
+$parsedArguments = ConvertFrom-OdsWindowsCommandLine $commandLine
+if (-not (Test-OdsDevelopmentHostArguments -ActualArguments $parsedArguments -ExpectedExecutable $executable -ExpectedDataDirectory $dataDirectory)) {
+    throw "Round-trip Unicode da linha de comando falhou: '$($parsedArguments -join ' | ')'."
+}
+
 foreach ($arguments in @(
     @($executable, '--console', '--data-directory', 'C:\repo with spaces\.local-data\dev-host\Data-Evil'),
     @($executable, '--console', '--data-directory', 'C:\repo with spaces\.local-data\dev-host\Data', '--extra'),

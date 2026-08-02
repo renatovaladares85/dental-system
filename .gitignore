@@ -73,7 +73,6 @@ Desktop.ini
 
 backups/
 backup/
-recovery/
 *.bak
 *.backup
 *.dump
@@ -88,6 +87,3 @@ recovery/
 *.p12
 *.jks
 *.keystore
-
-# Validações locais
-installer/validation-NOT-FOR-DISTRIBUTION.txt

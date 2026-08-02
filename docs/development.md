@@ -12,33 +12,40 @@ Builds, DPAPI, serviço, ACL, firewall, mDNS e instalação por script devem ser
 
 ## Caminho recomendado
 
-Na raiz do repositório, execute no PowerShell ou no Prompt de Comando:
+Na raiz do repositório, execute no PowerShell 7 não elevado:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-windows.ps1
+pwsh -NoProfile -File .\scripts\start-windows.ps1
 ```
 
-O script é idempotente e executa, em ordem:
+O orquestrador executa, em ordem:
 
 1. valida Windows 11 x64;
 2. recusa execução elevada, UNC, SMB, unidade mapeada e reparse point;
-3. reutiliza somente o processo de desenvolvimento exato; outra ocupação da porta 8742 falha fechada;
+3. recusa portas 8742 e 8743 ocupadas por outra instância;
 4. valida Node 24.17.0/npm 11 e Rust 1.97.1 MSVC;
 5. valida Build Tools C++, Windows SDK, Perl e NASM;
 6. executa `npm ci` e toda a qualidade frontend;
 7. executa `cargo fmt`, Clippy, testes e build com `--locked`;
-8. inicia uma instância de desenvolvimento isolada em `.local-data/`;
-9. valida corpo e headers de `GET /api/v1/health` e abre o setup no navegador.
+8. inicia uma instância de desenvolvimento isolada em `.local-data\dev-host\Data`;
+9. valida corpo e headers de `GET /api/v1/health`; o navegador só abre com `-OpenBrowser`.
 
-Por padrão ele apenas valida: não modifica a estação. A instalação assistida é permitida somente com opção explícita e requer internet/`winget`:
+O build é incremental por padrão. Para descartar somente `dist/` e
+`src-tauri/target/`, sem tocar em `.local-data`, use:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-windows.ps1 -InstallMissing
+pwsh -NoProfile -File .\scripts\dev\build.ps1 -Clean
 ```
 
-Não eleve o PowerShell e não use `-InstallMissing` em servidor com dados reais. O `winget` solicita elevação separadamente quando um instalador precisa dela; builds e scripts de dependências continuam no token normal. Esse iniciador de desenvolvimento não instala serviço, não altera firewall e não confia em CA.
+O host de desenvolvimento permanece em foreground por padrão e propaga exit
+code diferente de zero após encerrar. Para liberá-lo após o health, use
+`-Detach`; acompanhe o processo com `scripts/dev/status.ps1`. O
+`scripts/dev/stop.ps1` é uma parada forçada, porém limitada ao PID, executável e
+argumentos validados exatamente; shutdown gracioso via PowerShell não é prometido.
 
-O iniciador aguarda explicitamente cada processo e funciona no Windows PowerShell 5.1 ou PowerShell 7, inclusive em terminais com saída redirecionada. Quando a cópia portátil versionada de Strawberry Perl/NASM já existe no perfil, ela é reutilizada sem instalação global.
+Ferramentas ausentes falham com instrução objetiva; a instalação delas é um bootstrap
+manual separado. O iniciador de desenvolvimento não instala serviço, não altera
+firewall e não confia em CA.
 
 ## Pré-requisitos manuais
 
@@ -47,7 +54,7 @@ O iniciador aguarda explicitamente cada processo e funciona no Windows PowerShel
 - Rust 1.97.1, `rustfmt`, Clippy e target `x86_64-pc-windows-msvc`;
 - Visual Studio 2022 Build Tools com Desktop development with C++ e Windows SDK;
 - Perl e NASM para OpenSSL/SQLCipher vendorizados;
-- PowerShell 7 recomendado.
+- PowerShell 7 obrigatório.
 
 O usuário final não precisa desses componentes: o pacote portátil contém o binário Rust e a SPA incorporada.
 
@@ -64,7 +71,7 @@ Build integrado do servidor:
 
 ```powershell
 npm run build
-.\scripts\windows-cargo.cmd build --manifest-path src-tauri/Cargo.toml --locked --all-features
+cargo build --manifest-path src-tauri/Cargo.toml --locked --all-features
 ```
 
 O `build.rs` incorpora `dist/` ao executável. Build release sem SPA válida falha; em debug/teste, o fallback existe apenas para permitir testes Rust isolados.
@@ -78,15 +85,15 @@ npm run typecheck
 npm test
 npm run build
 
-.\scripts\windows-cargo.cmd fmt --manifest-path src-tauri/Cargo.toml --all -- --check
-.\scripts\windows-cargo.cmd clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets --all-features -- -D warnings
-.\scripts\windows-cargo.cmd test --manifest-path src-tauri/Cargo.toml --locked --all-features
-.\scripts\windows-cargo.cmd build --manifest-path src-tauri/Cargo.toml --locked --all-features
+cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets --all-features -- -D warnings
+cargo test --manifest-path src-tauri/Cargo.toml --locked --all-features
+cargo build --manifest-path src-tauri/Cargo.toml --locked --all-features
 ```
 
 ## Dados de desenvolvimento e produção
 
-O script usa somente `.local-data/web-host/` no repositório, ignorado pelo Git. A instalação futura usa:
+O script usa somente `.local-data/dev-host/Data` no repositório, ignorado pelo Git. A instalação MSI usa:
 
 ```text
 %ProgramData%\OfflineDentalSystem\
@@ -124,37 +131,69 @@ O log interno do SQLCipher é desabilitado antes da chave (`cipher_log_level = N
 
 `cipher_memory_security` permanece desabilitado até o teste Windows específico de quota/`VirtualLock` ser aprovado. Isso é um gate operacional, não um motivo para enfraquecer a cifra em disco.
 
-## Serviço e instalação por script
+## Serviço e instalação por MSI
 
 O alvo operacional é um Windows Service sob `LocalService`, início automático, perfil carregado e SID restrito. O instalador deve:
 
 - conceder ACL somente ao SID do serviço, `SYSTEM` e administradores;
 - abrir TCP 8743 somente nos perfis Private/Domain;
-- iniciar o serviço, aguardar o health loopback e confiar na CA pública no host;
-- criar atalho para `http://127.0.0.1:8742`;
+- iniciar o serviço e aguardar readiness antes de publicar `Running`;
+- disponibilizar atalho para `http://127.0.0.1:8742` sem abri-lo como condição de sucesso;
 - preservar `%ProgramData%\OfflineDentalSystem` em repair/uninstall.
 
 Empacotamento utilizável deve falhar enquanto licença do produto, certificado de assinatura, SQLCipher runtime ≥ 4.17 ou gates de segurança estiverem ausentes. CI não publica, não assina e não faz upload de artefatos.
 
-O pacote portátil para teste local pode ser criado com:
+O MSI é o único mecanismo suportado para criar/configurar o serviço. `-ValidationOnly`
+compila e valida o MSI com fixture temporário, sem assinar nem publicar. A distribuição
+exige executável e MSI assinados, com timestamp válido, antes de produzir assets de
+release. Scripts ZIP legados não são caminho suportado.
+
+O tooling do instalador é isolado e fixado em WiX `4.0.6`,
+`WixToolset.Firewall.wixext 4.0.6` e `WixToolset.Util.wixext 4.0.6`. Não é
+necessária instalação global nem elevação. O primeiro provisionamento exige rede
+para baixar os pacotes oficiais do NuGet; execuções posteriores usam apenas os
+arquivos locais:
 
 ```powershell
-.\scripts\build-portable-package.ps1 -Development
+$wixTools = .\scripts\tools\prepare-wix.ps1
+
+.\installer\build-msi.ps1 `
+    -ValidationOnly `
+    -WixExecutable $wixTools.WixExecutable `
+    -WixExtensionRoot $wixTools.ExtensionRoot
 ```
 
-Ele publica em `artifacts\portable\OfflineDentalSystem-<versão>-windows-x64\`, fica marcado como não distribuível e só é aceito pelo bootstrapper executado dentro do repositório. O modo real exige `-ProductLicenseFile`, `ODS_SIGNING_CERT_THUMBPRINT`, executável assinado e timestamp verificável.
+O CLI fica em `.local-data\tools\wix`, e as extensões em
+`.local-data\tools\wix-extensions`. Downloads, staging, backups recuperáveis e
+logs de falha ficam respectivamente em `.local-data\downloads`,
+`.local-data\staging`, `.local-data\backups\tools` e
+`.local-data\logs\wix`. Uma falha informa etapa, executável, comando, código,
+stdout, stderr e caminhos dos logs. Diretórios incompletos são movidos para o
+backup, nunca sobrescritos.
 
-O pacote contém apenas binário Rust com a SPA embutida, ícone, licença e scripts operacionais. `Instalar-e-Iniciar.bat` usa o ZIP local ou `canal-instalacao.json`, valida paths, tamanhos, SHA-256, lista exata de arquivos e, em distribuição, assinatura/timestamp pelo publisher fixado.
+Para limpar o ambiente local, pare o host e mova a pasta `.local-data` completa
+para um backup fora do repositório. Depois execute novamente o bootstrap; não
+apague arquivos versionados nem use `git clean`. `ValidationOnly` compila e
+valida um MSI temporário, mas não produz pacote distribuível.
 
-O script instala versões em `%ProgramFiles%\Offline Dental System\versions\<versão>`, mantém dados em `%ProgramData%\OfflineDentalSystem`, configura o Windows Service `OfflineDentalSystem`, ACL restrita, firewall `Private/Domain`, confiança da CA local e atalhos. Não baixa nem mantém Node, Rust, Docker ou Redis no host final.
-
-`Desinstalar-Sistema.bat` preserva dados. `Desinstalar-Tudo.bat` exige a confirmação textual `REMOVER` antes de apagar o diretório de dados. Ambos recusam paths divergentes dos diretórios controlados.
-
-O binário assinado é a fronteira de confiança. BAT/PowerShell são facilitadores operacionais e devem ser entregues por canal autenticado; um bootstrapper `.exe` assinado continua sendo a evolução indicada para distribuição em arquivo físico único.
-
-O authoring MSI permanece apenas como legado de validação e não é mais o fluxo primário.
+Para uma VM Windows descartável existe `installer/build-msi.ps1 -TestInstallationPackage`.
+Ele gera somente `artifacts/test-installer/*-TEST-ONLY-x64.msi`, sem assinatura de
+produção. Sua instalação exige `ODS_TEST_INSTALL=1`; nunca é artefato de release.
 
 ## Diagnóstico seguro
+
+Antes de qualquer tentativa de reparo, execute o diagnóstico sem escrita:
+
+```powershell
+& 'C:\Program Files\Offline Dental System\offline-dental-system.exe' --startup-diagnostics --json
+```
+
+O resultado é versionado e não cria banco, chave, TLS, host identity, migration,
+ACL ou regra de firewall. Os campos `dataDirectoryNotReadOnly` e
+`runtimeLogDirectoryNotReadOnly` refletem apenas o atributo readonly; os campos
+de ACL permanecem `unknown` porque o diagnóstico não cria arquivos para testar
+permissões efetivas. Ele informa estados sanitizados de diretórios, lock, portas,
+identidade, banco, envelope de chave, TLS e logs.
 
 | Sintoma                       | Ação                                                             |
 | ----------------------------- | ---------------------------------------------------------------- |

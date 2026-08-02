@@ -23,6 +23,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Rejeitar artefatos vazios anormais na raiz
+        shell: pwsh
+        run: |
+          $unexpected = @(Get-ChildItem -LiteralPath . -File -Force | Where-Object {
+            $_.Length -eq 0 -and $_.Name -match '^[^\p{L}\p{N}._-]+$'
+          })
+          if ($unexpected.Count -gt 0) {
+            $names = $unexpected | ForEach-Object Name
+            throw "Arquivos vazios com nomes anormais na raiz: $($names -join ', ')"
+          }
+
       - name: Configurar Node.js
         uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
         with:
@@ -30,8 +41,16 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
+      - name: Testar resolução do npm vinculado ao Node
+        shell: pwsh
+        run: .\scripts\tests\npm-resolution.tests.ps1
+
+      - name: Testar encoding de processos nativos
+        shell: pwsh
+        run: .\scripts\tests\native-process-encoding.tests.ps1
+
       - name: Instalar dependências do lockfile
-        run: npm ci
+        run: npm ci --include=dev
 
       - name: Verificar formatação
         run: npm run format:check
@@ -52,7 +71,8 @@ jobs:
         run: npm run verify:pwa
 
       - name: Auditar dependências npm
-        run: npm audit --audit-level=high
+        shell: pwsh
+        run: .\scripts\diagnostics\npm-audit.ps1
 
       - name: Inventariar licenças npm
         shell: pwsh
@@ -100,9 +120,48 @@ jobs:
             throw 'Há scripts PowerShell com erros de sintaxe.'
           }
 
-      - name: Testar ciclo do serviço Windows
-        shell: powershell
-        run: .\scripts\tests\windows-service.tests.ps1
+      - name: Analisar segurança dos scripts PowerShell
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          Install-Module `
+            PSScriptAnalyzer `
+            -RequiredVersion 1.24.0 `
+            -Scope CurrentUser `
+            -Force
+
+          $analysisPaths = @(
+            'scripts'
+            'installer'
+          )
+
+          $issues = @(
+            foreach ($analysisPath in $analysisPaths) {
+              Invoke-ScriptAnalyzer `
+                -Path $analysisPath `
+                -Recurse `
+                -Settings '.\PSScriptAnalyzerSettings.psd1' `
+                -ErrorAction Stop
+            }
+          )
+
+          if ($issues.Count -gt 0) {
+            $issues |
+              Sort-Object ScriptName, Line, RuleName |
+              Format-Table `
+                RuleName,
+                Severity,
+                ScriptName,
+                Line,
+                Message `
+                -AutoSize
+
+            throw "PSScriptAnalyzer encontrou $($issues.Count) ocorrência(s)."
+          }
+
+          Write-Host 'SUCESSO: PSScriptAnalyzer aprovado.' -ForegroundColor Green
 
       - name: Instalar toolchain fixada
         shell: pwsh
@@ -113,6 +172,14 @@ jobs:
           rustup toolchain install $channel --profile minimal --component clippy --component rustfmt --target x86_64-pc-windows-msvc
           rustup show active-toolchain
 
+      - name: Testar ambiente MSVC idempotente
+        shell: pwsh
+        run: .\scripts\tests\msvc-environment.tests.ps1
+
+      - name: Testar variáveis reservadas PowerShell
+        shell: pwsh
+        run: .\scripts\tests\powershell-reserved-variable.tests.ps1
+
       - name: Configurar Node.js para assets incorporados
         uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
         with:
@@ -120,9 +187,17 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
+      - name: Testar resolução e bootstrap local do WiX
+        shell: pwsh
+        run: .\scripts\tests\wix-resolution.tests.ps1
+
+      - name: Testar diagnósticos de processos WiX
+        shell: pwsh
+        run: .\scripts\tests\wix-process-error.tests.ps1
+
       - name: Compilar SPA para incorporação no binário
         run: |
-          npm ci
+          npm ci --include=dev
           npm run build
 
       - name: Verificar lockfile Cargo
@@ -131,6 +206,18 @@ jobs:
           if (-not (Test-Path src-tauri/Cargo.lock)) {
             throw 'src-tauri/Cargo.lock deve ser versionado para builds determinísticos.'
           }
+
+      - name: Testar ciclo do serviço Windows
+        shell: pwsh
+        run: .\scripts\tests\windows-service.tests.ps1
+
+      - name: Testar configuração do instalador do serviço
+        shell: pwsh
+        run: .\scripts\tests\configure-service.tests.ps1
+
+      - name: Testar validação do PID de desenvolvimento
+        shell: pwsh
+        run: .\scripts\tests\development-host-pid.tests.ps1
 
       - name: Verificar formatação Rust
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
@@ -144,29 +231,82 @@ jobs:
       - name: Compilar servidor Rust com a SPA incorporada
         run: cargo build --manifest-path src-tauri/Cargo.toml --locked --all-features
 
-      - name: Validar pacote portátil e bootstrapper
+      - name: Validar startup diagnostics
         shell: pwsh
         run: |
-          $output = Join-Path $env:RUNNER_TEMP 'ods-portable-validation'
-          .\scripts\build-portable-package.ps1 `
-            -Development `
-            -ServerExecutable .\src-tauri\target\debug\offline-dental-system.exe `
-            -OutputDirectory $output
-          $package = Get-ChildItem -LiteralPath $output -Filter 'OfflineDentalSystem-*-windows-x64.zip' -File -Recurse
-          if (@($package).Count -ne 1) { throw 'O build portátil não produziu exatamente um ZIP.' }
-          .\scripts\install-local.ps1 `
-            -PackagePath $package.FullName `
-            -AllowDevelopmentPackage `
-            -ValidatePackageOnly `
-            -LogPath (Join-Path $env:LOCALAPPDATA 'OfflineDentalSystem\Logs\ci-install.jsonl')
-          $installLog = Join-Path $env:LOCALAPPDATA 'OfflineDentalSystem\Logs\ci-install.jsonl'
-          $installEvents = Get-Content -Encoding UTF8 $installLog | ForEach-Object { $_ | ConvertFrom-Json }
-          if ('PACKAGE_VALIDATION_COMPLETED' -notin @($installEvents.event)) {
-            throw 'O log estruturado não registrou a validação do pacote.'
+          $executable = Resolve-Path '.\src-tauri\target\debug\offline-dental-system.exe'
+          $diagnostics = & $executable --startup-diagnostics --json
+          if ($LASTEXITCODE -ne 0) { throw 'Startup diagnostics falhou.' }
+          $parsed = $diagnostics | ConvertFrom-Json
+          if ($parsed.formatVersion -ne 2) { throw 'Formato inesperado do startup diagnostics.' }
+
+      - name: Console smoke
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP ('ods-console-' + [guid]::NewGuid().ToString('N'))
+          $data = Join-Path $root 'Data'
+          $stdout = Join-Path $root 'stdout.log'
+          $stderr = Join-Path $root 'stderr.log'
+          New-Item -ItemType Directory -Force -Path $data | Out-Null
+          $info = [Diagnostics.ProcessStartInfo]::new()
+          $info.FileName = (Resolve-Path '.\src-tauri\target\debug\offline-dental-system.exe')
+          $info.UseShellExecute = $false
+          $info.RedirectStandardOutput = $true
+          $info.RedirectStandardError = $true
+          [void]$info.ArgumentList.Add('--console')
+          [void]$info.ArgumentList.Add('--data-directory')
+          [void]$info.ArgumentList.Add($data)
+          $process = [Diagnostics.Process]::new()
+          $process.StartInfo = $info
+          if (-not $process.Start()) { throw 'Não foi possível iniciar o console host.' }
+          $outputTask = $process.StandardOutput.ReadToEndAsync()
+          $errorTask = $process.StandardError.ReadToEndAsync()
+          $response = $null
+          $payload = $null
+          try {
+            $deadline = [DateTime]::UtcNow.AddSeconds(45)
+            do {
+              try {
+                $response = Invoke-WebRequest 'http://127.0.0.1:8742/api/v1/health' -TimeoutSec 2
+                $payload = $response.Content | ConvertFrom-Json
+                if ($response.StatusCode -eq 200 -and
+                    $response.Headers['Content-Type'] -like 'application/json*' -and
+                    $response.Headers['Cache-Control'] -match 'no-store' -and
+                    $payload.status -eq 'ok') { break }
+              } catch {}
+              Start-Sleep -Milliseconds 500
+            } while ([DateTime]::UtcNow -lt $deadline -and -not $process.HasExited)
+            if ($process.HasExited -or -not $response -or $payload.status -ne 'ok') {
+              throw 'O console host não respondeu ao health esperado.'
+            }
+          } finally {
+            if (-not $process.HasExited) { $process.Kill() }
+            $process.WaitForExit()
+            [IO.File]::WriteAllText($stdout, $outputTask.GetAwaiter().GetResult())
+            [IO.File]::WriteAllText($stderr, $errorTask.GetAwaiter().GetResult())
+            $process.Dispose()
           }
-          $uninstallLog = Join-Path $env:LOCALAPPDATA 'OfflineDentalSystem\Logs\ci-uninstall.jsonl'
-          .\scripts\uninstall-local.ps1 -PlanOnly -LogPath $uninstallLog | ConvertFrom-Json | Out-Null
-          Get-Content -Encoding UTF8 $uninstallLog | ForEach-Object { $_ | ConvertFrom-Json } | Out-Null
+
+      - name: Validar MSI sem publicar
+        shell: pwsh
+        run: |
+          $before = git status --short
+          cargo build --manifest-path src-tauri/Cargo.toml --locked --all-features --release
+          $executable = Resolve-Path '.\src-tauri\target\release\offline-dental-system.exe'
+          $securityDiagnostics = & $executable --security-diagnostics --json
+          if ($LASTEXITCODE -ne 0 -or -not $securityDiagnostics) { throw 'Security diagnostics falhou.' }
+          $startupDiagnostics = & $executable --startup-diagnostics --json
+          if ($LASTEXITCODE -ne 0 -or -not $startupDiagnostics) { throw 'Startup diagnostics falhou.' }
+          $wixTools = .\scripts\tools\prepare-wix.ps1
+          .\installer\build-msi.ps1 `
+            -ValidationOnly `
+            -WixExecutable $wixTools.WixExecutable `
+            -WixExtensionRoot $wixTools.ExtensionRoot
+          $leftovers = @(Get-ChildItem -Path . -Recurse -File -Include *.msi,*.partial -ErrorAction SilentlyContinue)
+          if ($leftovers.Count -gt 0) { throw 'ValidationOnly deixou artefatos de instalador no workspace.' }
+          if (Test-Path -LiteralPath '.\artifacts\installer') { throw 'ValidationOnly criou diretório de distribuição.' }
+          $after = git status --short
+          if ($before -ne $after) { throw 'ValidationOnly alterou o working tree.' }
 
       - name: Instalar ferramentas de auditoria fixadas
         run: |
@@ -193,5 +333,5 @@ jobs:
           }
           $licenses | Sort-Object name | Format-Table name, version, license, license_file
 
-# Este workflow valida código-fonte, binário e pacote portátil de desenvolvimento.
+# Este workflow valida código-fonte, binário console e MSI sem publicar.
 # Ele não assina, não publica e não cria release.

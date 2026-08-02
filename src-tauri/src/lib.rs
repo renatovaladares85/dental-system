@@ -10,7 +10,10 @@ use std::{
     future::Future,
     net::SocketAddr,
     path::{Path, PathBuf},
-    sync::{Arc, Once, mpsc::Receiver},
+    sync::{
+        Arc, Once,
+        mpsc::{Receiver, SyncSender},
+    },
     time::Duration,
 };
 
@@ -23,20 +26,47 @@ use platform::{
     discovery::MdnsRegistration,
     host_identity::HostIdentityManager,
     instance_lock::InstanceGuard,
+    network::bind_dual_stack_listener,
     pairing::PairingManager,
     tls::{TlsIdentityAction, TlsIdentityManager},
 };
-use socket2::{Domain, Protocol, Socket, Type};
 use tokio::{net::TcpListener, sync::watch, task::JoinHandle};
 use uuid::Uuid;
 
 pub const DEFAULT_ADMIN_PORT: u16 = 8742;
 pub const DEFAULT_LAN_PORT: u16 = 8743;
 
+const STARTUP_ERROR_CODES: &[&str] = &[
+    "CONSOLE_DATA_DIRECTORY_INVALID",
+    "CONSOLE_DATA_DIRECTORY_RESERVED",
+    "HOST_TASK_STOPPED",
+    "INSTANCE_ALREADY_RUNNING",
+    "SERVICE_HOST_STOP_TIMEOUT",
+    "SERVICE_READINESS_FAILED",
+    "SERVICE_READINESS_TIMEOUT",
+    "STARTUP_ADMIN_BIND_FAILED",
+    "STARTUP_DATA_DIRECTORY_FAILED",
+    "STARTUP_DATABASE_FAILED",
+    "STARTUP_HOST_IDENTITY_FAILED",
+    "STARTUP_INSTANCE_LOCK_FAILED",
+    "STARTUP_RUNTIME_FAILED",
+    "STARTUP_SERVICE_READY_CHANNEL_FAILED",
+    "STARTUP_TLS_FAILED",
+];
+
+pub fn startup_error_code(error: &(dyn std::error::Error + Send + Sync + 'static)) -> &'static str {
+    let displayed = error.to_string();
+    STARTUP_ERROR_CODES
+        .iter()
+        .copied()
+        .find(|code| *code == displayed)
+        .unwrap_or("STARTUP_RUNTIME_FAILED")
+}
+
 pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let product_root = default_product_root()?;
     let data_directory = product_root.join("Data");
-    run_with_paths(product_root, data_directory, async {
+    run_with_paths(product_root, data_directory, "service", None, async {
         let _ = tokio::signal::ctrl_c().await;
     })
     .await
@@ -46,7 +76,7 @@ pub async fn run_console(
     data_directory: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (product_root, data_directory) = validate_console_data_directory(&data_directory)?;
-    run_with_paths(product_root, data_directory, async {
+    run_with_paths(product_root, data_directory, "console", None, async {
         let _ = tokio::signal::ctrl_c().await;
     })
     .await
@@ -57,7 +87,25 @@ pub fn security_diagnostics_json() -> Result<String, Box<dyn std::error::Error +
     Ok(serde_json::to_string(&diagnostics)?)
 }
 
-pub fn run_as_windows_service(shutdown: Receiver<()>) -> PlatformResult<()> {
+pub fn startup_diagnostics_json() -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    #[cfg(windows)]
+    let product_root = env::var_os("ProgramData")
+        .map(PathBuf::from)
+        .map(|path| path.join("OfflineDentalSystem"));
+    #[cfg(not(windows))]
+    let product_root = env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .map(|path| path.join("offline-dental-system"));
+
+    let diagnostics =
+        platform::startup_diagnostics::collect(product_root.as_deref(), product_root.is_some());
+    Ok(serde_json::to_string(&diagnostics)?)
+}
+
+pub fn run_as_windows_service(
+    readiness: SyncSender<()>,
+    shutdown: Receiver<()>,
+) -> PlatformResult<()> {
     let product_root =
         default_product_root().map_err(|_| PlatformError::new("SERVICE_DATA_ROOT_UNAVAILABLE"))?;
     let data_directory = product_root.join("Data");
@@ -74,56 +122,78 @@ pub fn run_as_windows_service(shutdown: Receiver<()>) -> PlatformResult<()> {
         .build()
         .map_err(|_| PlatformError::new("SERVICE_RUNTIME_FAILED"))?;
     runtime
-        .block_on(run_with_paths(product_root, data_directory, async move {
-            let _ = shutdown_rx.await;
-        }))
-        .map_err(|_| PlatformError::new("SERVICE_HOST_FAILED"))
+        .block_on(run_with_paths(
+            product_root,
+            data_directory,
+            "service",
+            Some(readiness),
+            async move {
+                let _ = shutdown_rx.await;
+            },
+        ))
+        .map_err(|error| PlatformError::new(startup_error_code(error.as_ref())))
 }
 
 async fn run_with_paths(
     product_root: PathBuf,
     data_directory: PathBuf,
+    mode: &'static str,
+    readiness: Option<SyncSender<()>>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    std::fs::create_dir_all(&data_directory)?;
-    init_tracing(&product_root)?;
+    let run_id = Uuid::now_v7();
+    init_tracing(&product_root, run_id, mode)?;
+    tracing::info!(event = "PRODUCT_ROOT_RESOLVED", run_id = %run_id, mode);
+    std::fs::create_dir_all(&data_directory)
+        .map_err(|_| startup_failed("STARTUP_DATA_DIRECTORY_FAILED"))?;
+    tracing::info!(event = "DATA_DIRECTORY_READY", run_id = %run_id);
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let _instance = InstanceGuard::acquire(&product_root)?;
-    let host = HostIdentityManager::load_or_create(&product_root)?;
-    let installation_id = Uuid::parse_str(&host.installation_id)?;
+    let _instance = InstanceGuard::acquire(&product_root)
+        .map_err(|_| startup_failed("STARTUP_INSTANCE_LOCK_FAILED"))?;
+    tracing::info!(event = "INSTANCE_LOCK_ACQUIRED", run_id = %run_id);
+    let host = HostIdentityManager::load_or_create(&product_root)
+        .map_err(|_| startup_failed("STARTUP_HOST_IDENTITY_FAILED"))?;
+    tracing::info!(event = "HOST_IDENTITY_READY", run_id = %run_id);
+    let installation_id = Uuid::parse_str(&host.installation_id)
+        .map_err(|_| startup_failed("STARTUP_HOST_IDENTITY_FAILED"))?;
 
-    let tls_manager = Arc::new(TlsIdentityManager::new(
-        &product_root,
-        PlatformKeyProtector::new(),
-    )?);
+    let tls_manager = Arc::new(
+        TlsIdentityManager::new(&product_root, PlatformKeyProtector::new())
+            .map_err(|_| startup_failed("STARTUP_TLS_FAILED"))?,
+    );
     let pairing_manager = Arc::new(PairingManager::new());
     let pairing = Arc::new(PlatformPairingAdapter::new(pairing_manager));
     match tls_manager.ensure_identity(&host.installation_id, &host.hostname, Utc::now()) {
         Ok(identity) => {
-            pairing.update_identity(
-                host.hostname.clone(),
-                identity.ca_fingerprint_sha256,
-                identity.ca_certificate_der,
-            )?;
+            pairing
+                .update_identity(
+                    host.hostname.clone(),
+                    identity.ca_fingerprint_sha256,
+                    identity.ca_certificate_der,
+                )
+                .map_err(|_| startup_failed("STARTUP_TLS_FAILED"))?;
+            tracing::info!(event = "TLS_IDENTITY_READY", run_id = %run_id);
         }
-        Err(error) => {
-            tracing::error!(
-                code = error.code(),
-                "TLS identity is not available; LAN remains closed"
-            );
+        Err(_) => {
+            tracing::error!(event = "TLS_IDENTITY_UNAVAILABLE", code = "STARTUP_TLS_FAILED", run_id = %run_id);
         }
     }
 
     let setup =
         application::SetupService::for_installation(data_directory.clone(), installation_id);
     let volumes = Arc::new(PlatformStorageVolumeAdapter::new(data_directory));
-    let state = HttpState::new(setup, volumes)?.with_pairing(pairing.clone());
+    let state = HttpState::new(setup, volumes)
+        .map_err(|_| startup_failed("STARTUP_DATABASE_FAILED"))?
+        .with_pairing(pairing.clone());
+    tracing::info!(event = "DATABASE_STATE_READ", run_id = %run_id);
     let ready = state.ready_receiver();
 
     let admin_address = SocketAddr::from(([127, 0, 0, 1], DEFAULT_ADMIN_PORT));
-    let admin_listener = TcpListener::bind(admin_address).await?;
-    tracing::info!(address = %admin_address, "administrative listener ready");
+    let admin_listener = TcpListener::bind(admin_address)
+        .await
+        .map_err(|_| startup_failed("STARTUP_ADMIN_BIND_FAILED"))?;
+    tracing::info!(event = "ADMIN_LISTENER_BOUND", address = %admin_address, run_id = %run_id);
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (failure_tx, mut failure_rx) = tokio::sync::mpsc::channel::<&'static str>(2);
@@ -143,8 +213,17 @@ async fn run_with_paths(
         host.hostname,
     );
 
+    if let Some(readiness) = readiness {
+        readiness
+            .send(())
+            .map_err(|_| startup_failed("STARTUP_SERVICE_READY_CHANNEL_FAILED"))?;
+    }
+    tracing::info!(event = "SERVICE_READY", run_id = %run_id);
+
     tokio::select! {
-        _ = shutdown => {}
+        _ = shutdown => {
+            tracing::info!(event = "SHUTDOWN_REQUESTED", run_id = %run_id);
+        }
         failure = failure_rx.recv() => {
             let code = failure.unwrap_or("HOST_TASK_STOPPED");
             tracing::error!(code, "server task stopped unexpectedly");
@@ -156,7 +235,13 @@ async fn run_with_paths(
 
     shutdown_tx.send_replace(true);
     wait_for_tasks(admin_task, lan_task).await;
+    tracing::info!(event = "SHUTDOWN_COMPLETED", run_id = %run_id);
     Ok(())
+}
+
+fn startup_failed(code: &'static str) -> Box<dyn std::error::Error + Send + Sync> {
+    tracing::error!(event = "STARTUP_FAILED", code);
+    code.into()
 }
 
 fn spawn_admin(
@@ -256,7 +341,7 @@ async fn run_lan_supervisor(
         current_tls.private_key_der.to_vec(),
     )
     .await?;
-    let listener = bind_dual_stack(DEFAULT_LAN_PORT)?;
+    let listener = bind_dual_stack_listener(DEFAULT_LAN_PORT)?;
     let lan_address = listener.local_addr()?;
     listener.set_nonblocking(true)?;
     let server = axum_server::from_tcp_rustls(listener, tls_config.clone())?;
@@ -275,7 +360,7 @@ async fn run_lan_supervisor(
         installation_id,
     )?;
     let availability = PairingAvailabilityGuard::activate(pairing.clone());
-    tracing::info!(address = %lan_address, service = discovery.fullname(), "LAN listener ready");
+    tracing::info!(event = "LAN_LISTENER_BOUND", address = %lan_address, service = discovery.fullname());
 
     let handle = axum_server::Handle::new();
     let serve = server.handle(handle.clone()).serve(router);
@@ -318,19 +403,6 @@ async fn run_lan_supervisor(
             }
         }
     }
-}
-
-fn bind_dual_stack(port: u16) -> std::io::Result<std::net::TcpListener> {
-    let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
-    socket.set_only_v6(false)?;
-    if socket.only_v6()? {
-        return Err(std::io::Error::other(
-            "dual-stack listener could not be enabled",
-        ));
-    }
-    socket.bind(&SocketAddr::from(([0_u16; 8], port)).into())?;
-    socket.listen(128)?;
-    Ok(socket.into())
 }
 
 struct PairingAvailabilityGuard {
@@ -424,11 +496,15 @@ fn validate_console_data_directory(
     Ok((product_root, data_directory))
 }
 
-fn init_tracing(product_root: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn init_tracing(
+    product_root: &Path,
+    run_id: Uuid,
+    mode: &'static str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use tracing_subscriber::fmt::writer::MakeWriterExt as _;
 
     static PANIC_HOOK: Once = Once::new();
-    let log_directory = product_root.join("Logs");
+    let log_directory = product_root.join("logs").join("runtime");
     std::fs::create_dir_all(&log_directory)?;
     let file_appender = tracing_appender::rolling::RollingFileAppender::builder()
         .rotation(tracing_appender::rolling::Rotation::DAILY)
@@ -436,12 +512,12 @@ fn init_tracing(product_root: &Path) -> Result<(), Box<dyn std::error::Error + S
         .filename_suffix("jsonl")
         .max_log_files(30)
         .build(log_directory)?;
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,tower_http=warn"));
+    let filter = tracing_subscriber::EnvFilter::new("info,tower_http=warn");
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .json()
         .flatten_event(true)
+        .with_current_span(true)
         .with_ansi(false)
         .with_target(false)
         .with_writer(std::io::stderr.and(file_appender))
@@ -451,7 +527,7 @@ fn init_tracing(product_root: &Path) -> Result<(), Box<dyn std::error::Error + S
             tracing::error!(code = "UNHANDLED_PANIC", "an internal task panicked");
         }));
     });
-    tracing::info!(event = "SERVER_LOGGING_READY", retention_files = 30);
+    tracing::info!(event = "PROCESS_STARTED", run_id = %run_id, mode, version = env!("CARGO_PKG_VERSION"), retention_files = 30);
     Ok(())
 }
 
@@ -459,11 +535,29 @@ fn init_tracing(product_root: &Path) -> Result<(), Box<dyn std::error::Error + S
 mod tests {
     use std::net::{SocketAddr, TcpStream};
 
-    use super::bind_dual_stack;
+    use super::startup_error_code;
+    use crate::platform::network::bind_dual_stack_listener;
+
+    #[test]
+    fn startup_error_code_preserves_known_sanitized_codes() {
+        let error: Box<dyn std::error::Error + Send + Sync> = "STARTUP_DATABASE_FAILED".into();
+
+        assert_eq!(
+            startup_error_code(error.as_ref()),
+            "STARTUP_DATABASE_FAILED"
+        );
+    }
+
+    #[test]
+    fn startup_error_code_hides_unexpected_error_details() {
+        let error = std::io::Error::other("C:\\sensitive\\database.sqlcipher");
+
+        assert_eq!(startup_error_code(&error), "STARTUP_RUNTIME_FAILED");
+    }
 
     #[test]
     fn lan_listener_accepts_ipv4_and_ipv6_before_mdns_can_be_enabled() {
-        let listener = bind_dual_stack(0).expect("dual-stack listener");
+        let listener = bind_dual_stack_listener(0).expect("dual-stack listener");
         let port = listener.local_addr().expect("listener address").port();
         let acceptor = std::thread::spawn(move || {
             for _ in 0..2 {

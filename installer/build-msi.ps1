@@ -1,13 +1,24 @@
 ﻿[CmdletBinding()]
 param(
     [switch]$ValidationOnly,
+    [switch]$TestInstallationPackage,
     [string]$ServerExecutable,
     [string]$ProductLicenseFile,
-    [string]$OutputDirectory
+    [string]$OutputDirectory,
+    [string]$WixExecutable,
+    [string]$WixExtensionRoot
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+$script:ValidationLicenseFile = $null
+
+trap {
+    if ($script:ValidationLicenseFile -and (Test-Path -LiteralPath $script:ValidationLicenseFile)) {
+        Remove-Item -LiteralPath $script:ValidationLicenseFile -Force -ErrorAction SilentlyContinue
+    }
+    throw $_
+}
 
 # Windows PowerShell 5.1 does not guarantee that this automatic variable exists
 # in a fresh process before the first native command reports an exit code.
@@ -18,13 +29,22 @@ $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $installerRoot '..'))
 $packageSource = Join-Path $installerRoot 'Package.wxs'
 $configureServiceScript = Join-Path $installerRoot 'configure-service.ps1'
 $configureScript = Join-Path $installerRoot 'configure-host-trust.ps1'
-$launchScript = Join-Path $installerRoot 'launch-after-install.ps1'
-$launcherBatch = Join-Path $installerRoot 'Instalar-ou-Abrir.bat'
-$launcherScriptTemplate = Join-Path $installerRoot 'Instalar-ou-Abrir.ps1'
-$launcherThumbprintToken = '__ODS_SIGNING_CERT_THUMBPRINT__'
 $applicationIcon = Join-Path $repositoryRoot 'src-tauri\icons\icon.ico'
 $minimumSqlCipher = [version]'4.17.0'
 $wixVersion = '4.0.6'
+$wixToolsRoot = Join-Path $repositoryRoot '.local-data\tools'
+$wixLogRoot = Join-Path $repositoryRoot '.local-data\logs\wix'
+. (Join-Path $repositoryRoot 'scripts\tools\wix-tooling.ps1')
+
+if ($ValidationOnly -and $TestInstallationPackage) {
+    throw 'ValidationOnly e TestInstallationPackage são mutuamente exclusivos.'
+}
+if ($TestInstallationPackage -and $OutputDirectory) {
+    throw 'TestInstallationPackage usa exclusivamente artifacts\test-installer e não aceita OutputDirectory.'
+}
+if ($TestInstallationPackage -and $env:ODS_SIGNING_CERT_THUMBPRINT) {
+    throw 'TestInstallationPackage não pode usar credenciais de assinatura de produção.'
+}
 
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or
     -not [Environment]::Is64BitOperatingSystem) {
@@ -41,26 +61,12 @@ foreach ($requiredFile in @(
     $packageSource,
     $configureServiceScript,
     $configureScript,
-    $launchScript,
-    $launcherBatch,
-    $launcherScriptTemplate,
     $applicationIcon
 )) {
     if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
         throw "Arquivo obrigatório do instalador ausente: '$requiredFile'."
     }
 }
-$launcherTokens = $null
-$launcherParseErrors = $null
-[Management.Automation.Language.Parser]::ParseFile(
-    $launcherScriptTemplate,
-    [ref]$launcherTokens,
-    [ref]$launcherParseErrors
-) | Out-Null
-if ($launcherParseErrors.Count -gt 0) {
-    throw 'O script do launcher contém erro de sintaxe e não pode integrar a distribuição.'
-}
-
 $cargoManifest = Get-Content -Raw (Join-Path $repositoryRoot 'src-tauri\Cargo.toml')
 $versionMatch = [regex]::Match($cargoManifest, '(?m)^version\s*=\s*"(\d+\.\d+\.\d+)"\s*$')
 if (-not $versionMatch.Success) { throw 'Não foi possível ler a versão do produto no Cargo.toml.' }
@@ -103,14 +109,19 @@ if ($diagnostics.sqlcipherVersion) {
     $cipherVersion = [version]$diagnostics.sqlcipherVersion
 }
 $distributionReady = $diagnostics.distributionReady -is [bool] -and $diagnostics.distributionReady -eq $true
-if (-not $ValidationOnly -and
+if (-not $ValidationOnly -and -not $TestInstallationPackage -and
     ($null -eq $cipherVersion -or $cipherVersion -lt $minimumSqlCipher -or -not $distributionReady)) {
     throw "Distribuição bloqueada: SQLCipher >= $minimumSqlCipher e distributionReady=true são obrigatórios."
 }
 
-$validationLicenseFile = [IO.Path]::GetFullPath((Join-Path $installerRoot 'validation-NOT-FOR-DISTRIBUTION.txt'))
-if ($ValidationOnly) {
-    $ProductLicenseFile = $validationLicenseFile
+if ($ValidationOnly -or $TestInstallationPackage) {
+    $script:ValidationLicenseFile = [IO.Path]::GetTempFileName()
+    [IO.File]::WriteAllText(
+        $script:ValidationLicenseFile,
+        'VALIDATION ONLY — NOT A PRODUCT LICENSE — DO NOT DISTRIBUTE',
+        [Text.UTF8Encoding]::new($false)
+    )
+    $ProductLicenseFile = $script:ValidationLicenseFile
 } elseif (-not $ProductLicenseFile) {
     $ProductLicenseFile = $env:ODS_PRODUCT_LICENSE_FILE
 }
@@ -119,33 +130,41 @@ if (-not $ProductLicenseFile -or -not (Test-Path -LiteralPath $ProductLicenseFil
 }
 $ProductLicenseFile = [IO.Path]::GetFullPath($ProductLicenseFile)
 if ((Get-Item -LiteralPath $ProductLicenseFile).Length -eq 0) { throw 'O arquivo de licença está vazio.' }
-if (-not $ValidationOnly -and
-    ($ProductLicenseFile.Equals($validationLicenseFile, [StringComparison]::OrdinalIgnoreCase) -or
+if (-not $ValidationOnly -and -not $TestInstallationPackage -and
+    ($ProductLicenseFile.Equals($script:ValidationLicenseFile, [StringComparison]::OrdinalIgnoreCase) -or
      (Get-Content -Raw -LiteralPath $ProductLicenseFile) -match '(?i)NOT[ -]FOR[ -]DISTRIBUTION')) {
     throw 'Distribuição bloqueada: o marcador de validação não é uma licença de produto.'
 }
 
-$wix = Get-Command 'wix.exe' -ErrorAction SilentlyContinue
-if ($null -eq $wix -and $env:ODS_WIX_EXE) {
-    $wixCandidate = [IO.Path]::GetFullPath($env:ODS_WIX_EXE)
-    if (-not (Test-Path -LiteralPath $wixCandidate -PathType Leaf)) {
-        throw "ODS_WIX_EXE não aponta para um arquivo existente: '$wixCandidate'."
-    }
-    $wix = Get-Command $wixCandidate -ErrorAction Stop
-}
-if ($null -eq $wix) {
-    throw "WiX Toolset $wixVersion ausente. Instale-o globalmente ou defina ODS_WIX_EXE para uma cópia portátil fixada."
-}
-$detectedWix = (& $wix.Source '--version' | Select-Object -First 1).Trim()
-if ($detectedWix -notmatch '^4\.0\.6(?:\+|$)') {
-    throw "WiX $wixVersion é obrigatório; detectado: $detectedWix."
+$resolvedWix = Resolve-OdsWixExecutable `
+    -WixExecutable $WixExecutable `
+    -ToolsRoot $wixToolsRoot `
+    -RepositoryRoot $repositoryRoot `
+    -LogRoot $wixLogRoot
+$resolvedExtensions = Resolve-OdsWixExtensions `
+    -WixExtensionRoot $WixExtensionRoot `
+    -ToolsRoot $wixToolsRoot `
+    -RepositoryRoot $repositoryRoot
+
+function Invoke-Wix {
+    param(
+        [Parameter(Mandatory)][string]$Stage,
+        [Parameter(Mandatory)][string[]]$Arguments
+    )
+
+    $result = Invoke-OdsWixProcess `
+        -Stage $Stage `
+        -Executable $resolvedWix `
+        -Arguments $Arguments `
+        -WorkingDirectory $repositoryRoot `
+        -LogRoot $wixLogRoot `
+        -ExpectedVersion $wixVersion
+    return $result.StdOut
 }
 
-foreach ($extension in @('WixToolset.Firewall.wixext', 'WixToolset.Util.wixext')) {
-    # `extension add` is idempotent and also handles an initially empty global
-    # cache (for which WiX 4 returns a non-zero status from `extension list`).
-    & $wix.Source 'extension' 'add' '-g' "$extension/$wixVersion"
-    if ($LASTEXITCODE -ne 0) { throw "Falha ao instalar a extensão WiX $extension/$wixVersion." }
+$detectedWix = (Invoke-Wix -Stage 'version' -Arguments @('--version')).Trim()
+if ($detectedWix -notmatch '^4\.0\.6(?:\+|$)') {
+    throw "WiX $wixVersion é obrigatório; detectado: $detectedWix."
 }
 
 function Find-SignTool {
@@ -202,7 +221,7 @@ function Sign-And-Verify([string]$Path) {
     Assert-ExpectedSignature $Path $thumbprint
 }
 
-if (-not $ValidationOnly) {
+if (-not $ValidationOnly -and -not $TestInstallationPackage) {
     $expectedThumbprint = Get-ExpectedSigningThumbprint
     $signature = Get-AuthenticodeSignature -LiteralPath $ServerExecutable
     if ($signature.Status -eq 'NotSigned') {
@@ -218,51 +237,39 @@ $temporaryDirectory = Join-Path ([IO.Path]::GetTempPath()) ("offline-dental-msi-
 New-Item -ItemType Directory -Path $temporaryDirectory | Out-Null
 $temporaryMsi = Join-Path $temporaryDirectory "OfflineDentalSystem-$productVersion-x64.msi"
 try {
-    & $wix.Source 'build' $packageSource `
-        '-arch' 'x64' `
-        '-ext' "WixToolset.Firewall.wixext/$wixVersion" `
-        '-ext' "WixToolset.Util.wixext/$wixVersion" `
-        '-d' "ProductVersion=$productVersion" `
-        '-d' "ServerExecutable=$ServerExecutable" `
-        '-d' "ProductLicenseFile=$ProductLicenseFile" `
-        '-d' "ConfigureServiceScript=$configureServiceScript" `
-        '-d' "ConfigureHostTrustScript=$configureScript" `
-        '-d' "LaunchAfterInstallScript=$launchScript" `
-        '-d' "ApplicationIcon=$applicationIcon" `
-        '-o' $temporaryMsi
-    if ($LASTEXITCODE -ne 0) { throw 'Compilação WiX falhou.' }
+    $null = Invoke-Wix -Stage 'build' -Arguments @(
+        'build', $packageSource,
+        '-arch', 'x64',
+        '-ext', $resolvedExtensions.FirewallExtension,
+        '-ext', $resolvedExtensions.UtilExtension,
+        '-d', "ProductVersion=$productVersion",
+        '-d', "ServerExecutable=$ServerExecutable",
+        '-d', "ProductLicenseFile=$ProductLicenseFile",
+        '-d', "ConfigureServiceScript=$configureServiceScript",
+        '-d', "ConfigureHostTrustScript=$configureScript",
+        '-d', "ApplicationIcon=$applicationIcon",
+        '-d', ("TestPackage=" + $(if ($TestInstallationPackage) { 'true' } else { 'false' })),
+        '-o', $temporaryMsi
+    )
 
-    & $wix.Source 'msi' 'validate' $temporaryMsi
-    if ($LASTEXITCODE -ne 0) { throw 'Validação MSI falhou.' }
+    $null = Invoke-Wix -Stage 'msi-validate' -Arguments @('msi', 'validate', $temporaryMsi)
 
     if ($ValidationOnly) {
         Write-Host 'SUCESSO: fonte WiX compilada/validada; MSI temporário será removido (não distribuível).' -ForegroundColor Green
         return
     }
 
-    Sign-And-Verify $temporaryMsi
-    $launcherTemplate = Get-Content -Raw -LiteralPath $launcherScriptTemplate
-    if ([regex]::Matches($launcherTemplate, [regex]::Escape($launcherThumbprintToken)).Count -ne 1) {
-        throw 'O template do launcher não contém exatamente um marcador de assinatura.'
-    }
-    $renderedLauncher = $launcherTemplate.Replace($launcherThumbprintToken, $expectedThumbprint)
-    $temporaryLauncher = Join-Path $temporaryDirectory 'Instalar-ou-Abrir.ps1'
-    [IO.File]::WriteAllText(
-        $temporaryLauncher,
-        $renderedLauncher,
-        [Text.UTF8Encoding]::new($true)
-    )
-    $renderedTokens = $null
-    $renderedParseErrors = $null
-    [Management.Automation.Language.Parser]::ParseFile(
-        $temporaryLauncher,
-        [ref]$renderedTokens,
-        [ref]$renderedParseErrors
-    ) | Out-Null
-    if ($renderedParseErrors.Count -gt 0) {
-        throw 'O launcher gerado contém erro de sintaxe.'
+    if ($TestInstallationPackage) {
+        $outputRoot = Join-Path $repositoryRoot 'artifacts\test-installer'
+        New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
+        $output = Join-Path $outputRoot "OfflineDentalSystem-$productVersion-TEST-ONLY-x64.msi"
+        if (Test-Path -LiteralPath $output) { throw "O pacote de teste '$output' já existe; sobrescrita foi recusada." }
+        Copy-Item -LiteralPath $temporaryMsi -Destination $output
+        Write-Host "SUCESSO: pacote TEST-ONLY criado em '$output'. Instale somente com ODS_TEST_INSTALL=1." -ForegroundColor Yellow
+        return
     }
 
+    Sign-And-Verify $temporaryMsi
     if (-not $OutputDirectory) {
         $OutputDirectory = Join-Path $repositoryRoot 'artifacts\installer'
     }
@@ -278,8 +285,6 @@ try {
     try {
         $publishedMsi = Join-Path $staging (Split-Path -Leaf $temporaryMsi)
         Copy-Item -LiteralPath $temporaryMsi -Destination $publishedMsi
-        Copy-Item -LiteralPath $launcherBatch -Destination (Join-Path $staging 'Instalar-ou-Abrir.bat')
-        Copy-Item -LiteralPath $temporaryLauncher -Destination (Join-Path $staging 'Instalar-ou-Abrir.ps1')
         Assert-ExpectedSignature $publishedMsi $expectedThumbprint
         Move-Item -LiteralPath $staging -Destination $output
     } catch {
@@ -292,5 +297,8 @@ try {
 } finally {
     if (Test-Path -LiteralPath $temporaryDirectory) {
         Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force
+    }
+    if ($script:ValidationLicenseFile -and (Test-Path -LiteralPath $script:ValidationLicenseFile)) {
+        Remove-Item -LiteralPath $script:ValidationLicenseFile -Force
     }
 }

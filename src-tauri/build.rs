@@ -98,7 +98,7 @@ fn is_versioned_asset(path: &str, extensions: &[&str]) -> bool {
     }
     file.file_stem()
         .and_then(|value| value.to_str())
-        .and_then(|stem| stem.rsplit_once('-'))
+        .and_then(|stem| stem.split_once('-'))
         .is_some_and(|(_, hash)| {
             hash.len() >= 8
                 && hash
@@ -120,5 +120,28 @@ fn content_type(path: &str) -> &'static str {
         Some("woff") => "font/woff",
         Some("woff2") => "font/woff2",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_versioned_asset;
+
+    #[test]
+    fn accepts_vite_hashes_that_contain_a_hyphen() {
+        assert!(is_versioned_asset("assets/index-BE-ywWTb.css", &["css"]));
+        assert!(is_versioned_asset(
+            "assets/index-c5SFIbdY.js",
+            &["js", "mjs"]
+        ));
+    }
+
+    #[test]
+    fn rejects_non_versioned_or_unsafe_assets() {
+        assert!(!is_versioned_asset("assets/index.css", &["css"]));
+        assert!(!is_versioned_asset(
+            "assets/../index-abcdefgh.css",
+            &["css"]
+        ));
     }
 }

@@ -1,65 +1,79 @@
-# Checklist da instalação local no Windows
+# Validação do MSI no Windows
 
-Este checklist é obrigatório antes de considerar o pacote portátil utilizável. Execute em
-uma máquina virtual Windows 11 x64 limpa, nos perfis de rede `Private` e
-`Domain`, sem Node.js, Rust, Docker ou sessão de desenvolvimento.
+Execute estes gates em uma VM Windows 11 x64 limpa. O MSI é o único instalador
+suportado; scripts ZIP e bootstrapper não fazem parte da validação.
 
-## Gate antes da instalação
+## Build
 
-- O executável possui assinatura Authenticode válida e timestamp; o bootstrapper fixa o mesmo publisher.
+- `npm ci`, qualidade frontend e build da SPA concluídos;
+- build Rust release concluído com assets reais incorporados;
 - `--security-diagnostics --json` informa SQLCipher `>= 4.17.0` e
-  `distributionReady: true`.
-- A licença de produto definitiva foi incorporada; o marcador
-  `validation-NOT-FOR-DISTRIBUTION.txt` não está presente.
+  `distributionReady: true`;
+- WiX `4.0.6` e as extensões `WixToolset.Firewall.wixext 4.0.6` e
+  `WixToolset.Util.wixext 4.0.6` estão provisionados localmente;
+- o bootstrap é executado sem elevação e a primeira execução requer acesso ao
+  NuGet oficial:
 
-## Serviço, identidade e dados
+  ```powershell
+  $wixTools = .\scripts\tools\prepare-wix.ps1
+  ```
 
-- O serviço `OfflineDentalSystem` executa como `NT AUTHORITY\LocalService`,
-  inicia automaticamente com atraso e possui SID do tipo `RESTRICTED`.
-- `Get-CimInstance Win32_Service -Filter "Name='OfflineDentalSystem'"` apresenta
-  `PathName` exatamente como `"<executável controlado>" --service` e
-  `StartName` como `NT AUTHORITY\LocalService`. `sc.exe qc` e
-  `sc.exe qsidtype` devem confirmar os mesmos valores.
-- Em `HKLM\SYSTEM\CurrentControlSet\Services\OfflineDentalSystem`, `Start = 2`,
-  `DelayedAutoStart = 1` e `ServiceSidType = 3`.
-- O SID retornado por `sc.exe showsid OfflineDentalSystem` é
-  `S-1-5-80-3281840523-3983707945-848950836-1812796060-3499222651`.
-- `%ProgramData%\OfflineDentalSystem` possui DACL protegida somente para
-  `SYSTEM`, `BUILTIN\Administrators` e o SID do serviço; usuários comuns não
-  conseguem ler banco, envelopes DPAPI ou chaves TLS.
-- A CA instalada em `LocalMachine\Root` corresponde byte a byte a
-  `%ProgramData%\OfflineDentalSystem\tls\ca.cer` e não contém chave privada.
-- Repair e upgrade preservam banco, identidade, chaves e artefatos. Uninstall
-  remove serviço/binários/regras, mas preserva os dados por padrão.
+- validações posteriores reutilizam o CLI e as DLLs locais, sem cache global e
+  sem rede durante o build:
 
-## Rede e descoberta
+  ```powershell
+  .\installer\build-msi.ps1 `
+      -ValidationOnly `
+      -WixExecutable $wixTools.WixExecutable `
+      -WixExtensionRoot $wixTools.ExtensionRoot
+  ```
 
-- Antes de `READY`, somente `127.0.0.1:8742` responde; `8743` e o anúncio mDNS
-  permanecem fechados.
-- Depois de `READY`, TCP `8743` e UDP `5353` possuem regras inbound separadas,
-  limitadas a `Private`/`Domain` e `LocalSubnet`; o perfil `Public` não possui
-  exceção.
-- Um cliente da mesma LAN resolve `dental-<installation-id>.local`, alcança
-  HTTPS e valida o fingerprint exibido no pareamento.
-- Todo endereço A/AAAA anunciado por mDNS realmente aceita HTTPS em `8743`;
-  não pode haver anúncio IPv6 com listener somente IPv4.
+- `ValidationOnly` conclui sem `.msi`, `.partial`, diretório de distribuição ou
+  mudança no working tree;
+- em distribuição, o executável e o MSI possuem Authenticode, certificado
+  esperado e timestamp válido.
 
-## Operação e clientes
+## Tooling WiX isolado
 
-- Com o sistema ausente, `Instalar-e-Iniciar.bat` valida o ZIP, solicita UAC uma vez, instala, espera o health e abre o navegador.
-- Com o sistema saudável, uma nova execução do BAT ou do atalho abre o navegador sem reinstalar.
-- Com o serviço parado, `Abrir-Sistema.bat` solicita UAC, inicia o serviço e abre o navegador.
-- ZIP ausente, duplicado, adulterado, truncado ou com binário assinado por outro certificado é rejeitado com mensagem legível.
-- Cancelar o UAC não inicia instalação parcial nem remove dados existentes.
-- Uma falha em `sc.exe create` não executa `stop`/`delete`; uma reexecução
-  atualiza apenas um serviço cujo executável anterior pertença ao diretório
-  controlado do produto. Serviço homônimo conflitante é recusado sem alteração.
-- Os atalhos “Offline Dental System” existem na Área de Trabalho e no menu Iniciar, usam o ícone local e abrem somente `http://127.0.0.1:8742`.
-- A desinstalação padrão preserva `%ProgramData%\OfflineDentalSystem`; a remoção total exige digitar `REMOVER`.
-- O atalho e a abertura pós-health-check funcionam sem terminal e sem
-  dependências de desenvolvimento.
-- Edge e Chrome no Windows/Android e Safari no iOS concluem confiança da CA,
-  pareamento, login, logout e expiração/revogação de sessão.
-- O firewall volta a bloquear o tráfego ao trocar a rede para `Public`.
-- O Service Worker não armazena `/api`, dados clínicos, cookies ou CSRF em
-  Cache Storage/IndexedDB e apresenta apenas o shell quando o servidor cai.
+O bootstrap não instala ferramentas globalmente. Os arquivos ficam sob:
+
+```text
+.local-data\tools\wix\4.0.6\
+.local-data\tools\wix-extensions\<pacote>\4.0.6\
+.local-data\downloads\
+.local-data\staging\
+.local-data\backups\tools\
+.local-data\logs\wix\
+```
+
+Diretórios incompletos são movidos para `.local-data\backups\tools` com nome
+único; não os apague antes de concluir o diagnóstico. Falhas WiX preservam
+stdout e stderr em `.local-data\logs\wix`, junto com etapa, comando e código de
+saída exibidos no console. Logs de execuções bem-sucedidas são removidos.
+
+Para reprovisionar manualmente, pare o host e mova `.local-data` integralmente
+para um local de backup fora do repositório antes de repetir o bootstrap. Não
+remova arquivos versionados nem use limpeza ampla do Git. `ValidationOnly` não
+gera um MSI distribuível.
+
+## Serviço e dados
+
+- `OfflineDentalSystem` usa `NT AUTHORITY\LocalService`, delayed auto-start e
+  Service SID restrito;
+- o SCM permanece `StartPending` até o listener administrativo estar ligado e
+  só então publica `Running`;
+- `%ProgramData%\OfflineDentalSystem` preserva banco, DPAPI, backups e
+  identidade em repair, upgrade, rollback e uninstall;
+- regras de firewall permanecem somente em `Private`/`Domain`; não há exceção
+  em rede pública;
+- falha anterior à criação do serviço não tenta `stop` ou `delete`.
+
+## Operação
+
+- a instalação não abre navegador como condição de sucesso;
+- `GET http://127.0.0.1:8742/api/v1/health` devolve HTTP 200,
+  JSON `{"status":"ok"}`, `Content-Type: application/json` e
+  `Cache-Control: no-store`;
+- logs sanitizados ficam em `%ProgramData%\OfflineDentalSystem\logs\runtime`;
+- use `scripts/diagnostics/inspect-installation.ps1` para inspeção somente
+  leitura antes de qualquer ação corretiva.

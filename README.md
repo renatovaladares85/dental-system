@@ -6,44 +6,26 @@ Servidor web local para uma clínica odontológica. Um único processo Rust no W
 
 ## Instalação para usuário final
 
-O sistema é web local. O usuário não instala Node, Rust, Docker ou banco separadamente: recebe uma pasta com o bootstrapper e um ZIP pré-compilado, então executa somente:
+O único instalador suportado é o MSI assinado. A release oficial disponibilizará
+`OfflineDentalSystem-<versão>-windows-x64.msi`, checksum, SBOM e instruções de
+instalação. Um ZIP de release, quando publicado, será apenas um contêiner desses
+arquivos: ele não cria serviço, altera ACL, firewall ou certificados.
 
-```text
-Instalar-e-Iniciar.bat
-```
-
-O script valida o pacote, solicita UAC, instala o servidor web como serviço local, configura ACL/firewall/certificado, cria atalhos, aguarda o health check e abre o navegador. Reexecuções saudáveis apenas abrem o sistema. O ZIP pode estar ao lado do BAT ou ser baixado por HTTPS mediante `canal-instalacao.json` com SHA-256 fixado.
-
-Depois da instalação, o atalho “Offline Dental System” na Área de Trabalho inicia o serviço quando necessário e abre `http://127.0.0.1:8742`. O menu Iniciar também contém o desinstalador.
-
-- `Desinstalar-Sistema.bat` remove serviço, firewall, certificado, programa e atalhos, preservando `%ProgramData%\OfflineDentalSystem`;
-- `Desinstalar-Tudo.bat` também apaga banco, chaves e configurações somente após digitar `REMOVER`.
-
-O pacote portátil é gerado por:
-
-```powershell
-.\scripts\build-portable-package.ps1
-```
-
-Distribuição real permanece bloqueada sem licença definitiva, binário Authenticode assinado, timestamp e gates de segurança. Para validação dentro do repositório é permitido gerar um pacote explicitamente marcado como desenvolvimento com `-Development`; ele nunca deve ser entregue a terceiros.
+Não execute scripts de pacote portátil/ZIP como instalação de produção. A
+desinstalação padrão deve preservar `%ProgramData%\OfflineDentalSystem`, incluindo
+banco, chaves e backups.
 
 ## Iniciar no Windows para desenvolvimento
 
-Na raiz do repositório, execute no PowerShell ou no Prompt de Comando:
+Na raiz do repositório, execute no PowerShell 7 não elevado:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-windows.ps1
+pwsh -NoProfile -File .\scripts\start-windows.ps1
 ```
 
-O script valida as versões fixadas, instala dependências do lockfile, executa formatação, lint, typecheck, testes e builds, inicia o servidor, aguarda o health check e abre `http://127.0.0.1:8742` no navegador.
-
-Por segurança, ferramentas ausentes **não são instaladas implicitamente**. Em uma estação de desenvolvimento autorizada, a instalação assistida por `winget` é opt-in:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-windows.ps1 -InstallMissing
-```
-
-Esse script é exclusivo para desenvolvimento a partir do código-fonte. O usuário final recebe o pacote pré-compilado e não instala toolchains.
+O orquestrador executa `check`, `build` e `run`. Ferramentas ausentes nunca são
+instaladas implicitamente. O host usa somente `.local-data\dev-host\Data`, aguarda
+o health e só abre o navegador com `-OpenBrowser`.
 
 ## Topologia
 
@@ -69,10 +51,10 @@ npm run typecheck
 npm test
 npm run build
 
-.\scripts\windows-cargo.cmd fmt --manifest-path src-tauri/Cargo.toml --all -- --check
-.\scripts\windows-cargo.cmd clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets --all-features -- -D warnings
-.\scripts\windows-cargo.cmd test --manifest-path src-tauri/Cargo.toml --locked --all-features
-.\scripts\windows-cargo.cmd build --manifest-path src-tauri/Cargo.toml --locked --all-features
+cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets --all-features -- -D warnings
+cargo test --manifest-path src-tauri/Cargo.toml --locked --all-features
+cargo build --manifest-path src-tauri/Cargo.toml --locked --all-features
 ```
 
 O nome histórico `src-tauri/` permanece apenas como raiz do crate para evitar churn. O produto não usa runtime, IPC, WebView ou dependências Tauri.
@@ -89,6 +71,6 @@ O nome histórico `src-tauri/` permanece apenas como raiz do crate para evitar c
 
 ## Limites de distribuição
 
-O código fixa uma revisão do `rusqlite` que incorpora SQLCipher 4.17.0 e também valida a versão em runtime. Isso não libera produção sozinho. Serviço/ACL/DPAPI após reboot, TLS e renovação, cache dos navegadores, 20 clientes concorrentes, restore em outra máquina e instalação pelo pacote portátil em Windows 11 limpo ainda precisam passar pelos gates documentados em [security.md](docs/security.md).
+O código fixa uma revisão do `rusqlite` que incorpora SQLCipher 4.17.0 e também valida a versão em runtime. Isso não libera produção sozinho. Serviço/ACL/DPAPI após reboot, TLS e renovação, cache dos navegadores, 20 clientes concorrentes, restore em outra máquina e instalação pelo MSI em Windows 11 limpo ainda precisam passar pelos gates documentados em [security.md](docs/security.md).
 
 Não há publicação, release, updater ou telemetria nesta etapa.

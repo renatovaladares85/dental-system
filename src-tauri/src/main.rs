@@ -1,11 +1,12 @@
 use std::{ffi::OsString, path::PathBuf, sync::Arc};
 
-const USAGE: &str = "Uso: offline-dental-system --service | --console --data-directory <caminho-absoluto-Data> | --security-diagnostics --json";
+const USAGE: &str = "Uso: offline-dental-system --service | --console --data-directory <caminho-absoluto-Data> | --security-diagnostics --json | --startup-diagnostics --json";
 
 enum Mode {
     Service,
     Console(PathBuf),
     SecurityDiagnostics,
+    StartupDiagnostics,
     Help,
 }
 
@@ -22,7 +23,7 @@ fn run_main() -> Result<(), &'static str> {
             offline_dental_system_lib::platform::windows_service::run_dispatcher(Arc::new(
                 offline_dental_system_lib::run_as_windows_service,
             ))
-            .map_err(|_| "SERVICE_START_FAILED")?;
+            .map_err(|error| error.code())?;
         }
         Mode::Console(data_directory) => {
             tokio::runtime::Builder::new_multi_thread()
@@ -30,11 +31,16 @@ fn run_main() -> Result<(), &'static str> {
                 .build()
                 .map_err(|_| "RUNTIME_START_FAILED")?
                 .block_on(offline_dental_system_lib::run_console(data_directory))
-                .map_err(|_| "CONSOLE_HOST_FAILED")?;
+                .map_err(|error| offline_dental_system_lib::startup_error_code(error.as_ref()))?;
         }
         Mode::SecurityDiagnostics => {
             let json = offline_dental_system_lib::security_diagnostics_json()
                 .map_err(|_| "SECURITY_DIAGNOSTICS_FAILED")?;
+            println!("{json}");
+        }
+        Mode::StartupDiagnostics => {
+            let json = offline_dental_system_lib::startup_diagnostics_json()
+                .map_err(|_| "STARTUP_DIAGNOSTICS_FAILED")?;
             println!("{json}");
         }
         Mode::Help => println!("{USAGE}"),
@@ -49,6 +55,9 @@ fn parse_mode(arguments: Vec<OsString>) -> Result<Mode, &'static str> {
     if arguments.len() == 2 && arguments[0] == "--security-diagnostics" && arguments[1] == "--json"
     {
         return Ok(Mode::SecurityDiagnostics);
+    }
+    if arguments.len() == 2 && arguments[0] == "--startup-diagnostics" && arguments[1] == "--json" {
+        return Ok(Mode::StartupDiagnostics);
     }
     if arguments.len() == 3
         && arguments[0] == "--console"
@@ -84,6 +93,11 @@ mod tests {
             parse_mode(vec!["--security-diagnostics".into(), "--json".into()])
                 .expect("diagnostics"),
             Mode::SecurityDiagnostics
+        ));
+        assert!(matches!(
+            parse_mode(vec!["--startup-diagnostics".into(), "--json".into()])
+                .expect("startup diagnostics"),
+            Mode::StartupDiagnostics
         ));
         assert!(matches!(
             parse_mode(vec![
